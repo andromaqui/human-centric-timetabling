@@ -1,0 +1,110 @@
+.mini-timetable-card {
+  height: 100%;
+  background: white;
+}
+
+.mini-timetable-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid #ede9fe;
+}
+
+.mini-timetable-header h4 {
+  margin: 0;
+  color: #2e1065;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.mini-timetable-link {
+  color: #7c3aed;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.mini-timetable-grid {
+  display: grid;
+  grid-template-columns: 34px repeat(5, 1fr);
+  gap: 5px;
+  padding: 14px;
+  background: #faf7ff;
+}
+
+.mini-timetable-corner,
+.mini-day-label,
+.mini-time-label {
+  color: #6b7280;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.mini-day-label {
+  text-align: center;
+}
+
+.mini-time-label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 4px;
+}
+
+.mini-cell {
+  height: 22px;
+  border: 1px solid #ede9fe;
+  border-radius: 6px;
+  background: white;
+}
+
+.mini-cell.busy {
+  background: #e5e7eb;
+}
+
+.mini-cell.selected {
+  background: #7c3aed;
+  border-color: #7c3aed;
+}
+
+.mini-timetable-legend {
+  display: flex;
+  gap: 12px;
+  padding: 10px 14px 12px;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mini-timetable-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mini-timetable-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.mini-cell.unavailable {
+  background: #fee2e2;
+  border-color: #fecaca;
+}
+
+.legend-unavailable {
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+}
+
+.legend-selected {
+  background: #7c3aed;
+}
+
+.legend-busy {
+  background: #e5e7eb;
+}
