@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Calendar, Clock, MapPin, User, ExternalLink } from "lucide-react";
 import { MiniTimetablePreview } from "../components/MiniTimetablePreview";
@@ -10,9 +10,88 @@ import {
   getBusySlots,
 } from "../data/timetableData";
 
-import { timetableData } from "../data/timetableData";
+import { useTimetableData } from "../hooks/useTimetableData";
+import { api } from "../../../shared/api/client";
 import type { Cohort, Lecturer, Program, Session } from "../types";
 import "./ReschedulePage.css";
+
+type ConstraintDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  stakeholder: string;
+  type: "unrelaxable" | "relaxable";
+};
+
+type RelaxationOut = {
+  id: string;
+  instance_type: string;
+  instance_id: string;
+  relaxation_type: "disable" | "adjust";
+  details: Record<string, unknown> | null;
+  reason: string;
+};
+
+type RelatedConstraintRow = {
+  key: string;
+  group: "Lecturer" | "Cohorts" | "Rooms / class";
+  entityLabel: string;
+  constraintId: string;
+  constraintName: string;
+  relaxable: boolean;
+  isActivated: boolean;
+  relaxation: RelaxationOut | null;
+};
+
+// Read-only constraint overview used by Step 3.
+// Unlike relatedConstraints above, this represents every ACTIVE constraint
+// instance in the system, grouped in the same hierarchy as ConstraintsPage.
+type OverviewLeaf = {
+  key: string;
+  label: string;
+  infoText: string;
+  instanceType: "session" | "lecturer" | "cohort" | "room";
+  instanceId: string;
+  relaxation: RelaxationOut | null;
+};
+
+type OverviewEntityGroup = {
+  key: string;
+  label: string;
+  isDayScoped: boolean;
+  leaves: OverviewLeaf[];
+};
+
+const OVERVIEW_STAKEHOLDERS = ["Lecturer", "Cohort", "Session", "Room"] as const;
+
+const DAY_LABELS: Record<string, string> = {
+  mon: "Monday",
+  tue: "Tuesday",
+  wed: "Wednesday",
+  thu: "Thursday",
+  fri: "Friday",
+};
+
+async function fetchRelaxation(
+  instanceType: "session" | "lecturer" | "cohort" | "room",
+  instanceId: string,
+): Promise<RelaxationOut | null> {
+  const relaxations = await api.get<RelaxationOut[]>(
+    `/relaxations/?instance_type=${instanceType}&instance_id=${instanceId}`,
+  );
+  return relaxations[0] ?? null;
+}
+
+function describeRelaxation(relaxation: RelaxationOut): string {
+  if (relaxation.reason) return relaxation.reason;
+  if (relaxation.relaxation_type === "disable") return "Temporarily disabled";
+  if (relaxation.details) {
+    return Object.entries(relaxation.details)
+      .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(", ") : value}`)
+      .join(" · ");
+  }
+  return "Relaxed";
+}
 
 type WizardStep = 1 | 2 | 3 | 4 | 5;
 
@@ -116,6 +195,7 @@ const initialObjectives: Objective[] = [
 export function ReschedulePage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
+  const { data } = useTimetableData();
   const solutionStatus = 2;
   const [selectedConflictSlot, setSelectedConflictSlot] = useState("tue-09");
   const [step, setStep] = useState<WizardStep>(1);
@@ -154,27 +234,414 @@ export function ReschedulePage() {
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const [rescheduleScope, setRescheduleScope] = useState<RescheduleScope>(null);
 
-  const availableRooms = ["Room A210", "Room B204", "Room B302", "Room C105"];
+  const availableRooms = useMemo(
+    () => data?.rooms.map((room) => room.name) ?? [],
+    [data],
+  );
 
   const selectedEvent = useMemo<SelectedEvent | null>(() => {
-    const session = timetableData.sessions.find(
+    if (!data) return null;
+
+    const session = data.sessions.find(
       (item) => item.id === sessionId,
     );
     if (!session) return null;
 
     return {
       session,
-      lecturer: timetableData.lecturers.find(
+      lecturer: data.lecturers.find(
         (lecturer) => lecturer.id === session.lecturerId,
       ),
-      programs: timetableData.programs.filter((program) =>
+      programs: data.programs.filter((program) =>
         session.programIds.includes(program.id),
       ),
-      cohorts: timetableData.cohorts.filter((cohort) =>
+      cohorts: data.cohorts.filter((cohort) =>
         session.cohortIds.includes(cohort.id),
       ),
     };
-  }, [sessionId]);
+  }, [sessionId, data]);
+
+
+  const selectedModule = useMemo(() => {
+    if (!data || !selectedEvent) return undefined;
+    return data.modules.find(
+      (module) => module.id === selectedEvent.session.moduleId,
+    );
+  }, [data, selectedEvent]);
+
+  const [constraintDefinitions, setConstraintDefinitions] = useState<
+    ConstraintDefinition[]
+  >([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get<ConstraintDefinition[]>("/constraints/")
+      .then((defs) => {
+        if (!cancelled) setConstraintDefinitions(defs);
+      })
+      .catch(() => {
+        if (!cancelled) setConstraintDefinitions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const [relatedConstraints, setRelatedConstraints] = useState<
+    RelatedConstraintRow[]
+  >([]);
+  const [relatedConstraintsLoading, setRelatedConstraintsLoading] =
+    useState(false);
+
+  useEffect(() => {
+    if (!selectedEvent || constraintDefinitions.length === 0) {
+      setRelatedConstraints([]);
+      return;
+    }
+
+    let cancelled = false;
+    setRelatedConstraintsLoading(true);
+
+    async function loadRelatedConstraints() {
+      const rows: RelatedConstraintRow[] = [];
+
+      // session-level (equipment, capacity)
+      const sessionInstances = await api.get<
+        { id: string; constraint_id: string; is_activated: boolean }[]
+      >(`/sessions/${selectedEvent.session.id}/constraints`);
+      for (const instance of sessionInstances) {
+        if (!instance.is_activated) continue;
+        const definition = constraintDefinitions.find(
+          (c) => c.id === instance.constraint_id,
+        );
+        if (!definition) continue;
+        rows.push({
+          key: instance.id,
+          group: "Rooms / class",
+          entityLabel: `${selectedModule?.code ?? "This class"}`,
+          constraintId: definition.id,
+          constraintName: definition.name,
+          relaxable: definition.type === "relaxable",
+          isActivated: true,
+          relaxation: await fetchRelaxation("session", instance.id),
+        });
+      }
+
+      // lecturer-level
+      if (selectedEvent.lecturer) {
+        const lecturerInstances = await api.get<
+          { id: string; constraint_id: string; is_activated: boolean }[]
+        >(`/lecturers/${selectedEvent.lecturer.id}/constraints`);
+        for (const instance of lecturerInstances) {
+          if (!instance.is_activated) continue;
+          const definition = constraintDefinitions.find(
+            (c) => c.id === instance.constraint_id,
+          );
+          if (!definition) continue;
+          rows.push({
+            key: instance.id,
+            group: "Lecturer",
+            entityLabel: selectedEvent.lecturer!.name,
+            constraintId: definition.id,
+            constraintName: definition.name,
+            relaxable: definition.type === "relaxable",
+            isActivated: true,
+            relaxation: await fetchRelaxation("lecturer", instance.id),
+          });
+        }
+      }
+
+      // cohort-level
+      for (const cohort of selectedEvent.cohorts) {
+        const cohortInstances = await api.get<
+          { id: string; constraint_id: string; is_activated: boolean }[]
+        >(`/cohorts/${cohort.id}/constraints`);
+        for (const instance of cohortInstances) {
+          if (!instance.is_activated) continue;
+          const definition = constraintDefinitions.find(
+            (c) => c.id === instance.constraint_id,
+          );
+          if (!definition) continue;
+          rows.push({
+            key: instance.id,
+            group: "Cohorts",
+            entityLabel: cohort.name,
+            constraintId: definition.id,
+            constraintName: definition.name,
+            relaxable: definition.type === "relaxable",
+            isActivated: true,
+            relaxation: await fetchRelaxation("cohort", instance.id),
+          });
+        }
+      }
+
+      if (!cancelled) {
+        setRelatedConstraints(rows);
+        setRelatedConstraintsLoading(false);
+      }
+    }
+
+    loadRelatedConstraints().catch(() => {
+      if (!cancelled) setRelatedConstraintsLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedEvent, selectedModule, constraintDefinitions]);
+
+  // ---------------------------------------------------------------------------
+  // Step 3: complete READ-ONLY overview of every active constraint instance.
+  // This intentionally has no modal, no edit action, and no relaxation controls.
+  // ---------------------------------------------------------------------------
+  const [overviewEntitiesByConstraint, setOverviewEntitiesByConstraint] = useState<
+    Record<string, OverviewEntityGroup[]>
+  >({});
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [openOverviewStakeholders, setOpenOverviewStakeholders] = useState<Set<string>>(
+    new Set(["Lecturer", "Cohort", "Session", "Room"]),
+  );
+  const [openOverviewConstraints, setOpenOverviewConstraints] = useState<Set<string>>(
+    new Set(),
+  );
+  const [openOverviewEntities, setOpenOverviewEntities] = useState<Set<string>>(
+    new Set(),
+  );
+
+  useEffect(() => {
+    if (!data || constraintDefinitions.length === 0) {
+      setOverviewEntitiesByConstraint({});
+      return;
+    }
+
+    let cancelled = false;
+    setOverviewLoading(true);
+
+    async function loadOverview() {
+      const next: Record<string, OverviewEntityGroup[]> = {};
+
+      for (const constraint of constraintDefinitions) {
+        const groups: OverviewEntityGroup[] = [];
+
+        if (constraint.stakeholder === "Lecturer") {
+          const lecturers = await api.get<{ id: string; name: string }[]>("/lecturers/");
+
+          for (const lecturer of lecturers) {
+            const instances = await api.get<
+              { id: string; constraint_id: string; day: string | null; is_activated: boolean }[]
+            >(`/lecturers/${lecturer.id}/constraints`);
+
+            const matches = instances.filter(
+              (instance) =>
+                instance.constraint_id === constraint.id && instance.is_activated,
+            );
+            if (matches.length === 0) continue;
+
+            const isDayScoped = matches.some((instance) => instance.day !== null);
+            const leaves = await Promise.all(
+              matches.map(async (instance) => ({
+                key: instance.id,
+                label: isDayScoped
+                  ? DAY_LABELS[instance.day ?? ""] ?? instance.day ?? "Day"
+                  : lecturer.name,
+                infoText: "",
+                instanceType: "lecturer" as const,
+                instanceId: instance.id,
+                relaxation: await fetchRelaxation("lecturer", instance.id),
+              })),
+            );
+
+            groups.push({
+              key: lecturer.id,
+              label: lecturer.name,
+              isDayScoped,
+              leaves,
+            });
+          }
+        }
+
+        if (constraint.stakeholder === "Cohort") {
+          const cohorts = await api.get<{ id: string; name: string }[]>("/cohorts/");
+
+          for (const cohort of cohorts) {
+            const instances = await api.get<
+              { id: string; constraint_id: string; day: string | null; is_activated: boolean }[]
+            >(`/cohorts/${cohort.id}/constraints`);
+
+            const matches = instances.filter(
+              (instance) =>
+                instance.constraint_id === constraint.id && instance.is_activated,
+            );
+            if (matches.length === 0) continue;
+
+            const isDayScoped = matches.some((instance) => instance.day !== null);
+            const leaves = await Promise.all(
+              matches.map(async (instance) => ({
+                key: instance.id,
+                label: isDayScoped
+                  ? DAY_LABELS[instance.day ?? ""] ?? instance.day ?? "Day"
+                  : cohort.name,
+                infoText: "",
+                instanceType: "cohort" as const,
+                instanceId: instance.id,
+                relaxation: await fetchRelaxation("cohort", instance.id),
+              })),
+            );
+
+            groups.push({
+              key: cohort.id,
+              label: cohort.name,
+              isDayScoped,
+              leaves,
+            });
+          }
+        }
+
+        if (constraint.stakeholder === "Session") {
+          const sessions = await api.get<{ id: string; module_id: string }[]>("/sessions/");
+
+          for (const session of sessions) {
+            const instances = await api.get<
+              { id: string; constraint_id: string; is_activated: boolean }[]
+            >(`/sessions/${session.id}/constraints`);
+
+            const instance = instances.find(
+              (item) => item.constraint_id === constraint.id && item.is_activated,
+            );
+            if (!instance) continue;
+
+            const module = data.modules.find((item) => item.id === session.module_id);
+            const moduleLabel = module
+              ? `${module.code} · ${module.title}`
+              : session.module_id;
+
+            const infoText =
+              constraint.id === "class-equipment"
+                ? `Needs: ${(module?.requiredEquipment ?? []).join(", ") || "None"}`
+                : constraint.id === "class-capacity"
+                  ? `Requires at least ${module?.requiredCapacity ?? "?"} seats`
+                  : "";
+
+            groups.push({
+              key: session.id,
+              label: moduleLabel,
+              isDayScoped: false,
+              leaves: [
+                {
+                  key: instance.id,
+                  label: moduleLabel,
+                  infoText,
+                  instanceType: "session",
+                  instanceId: instance.id,
+                  relaxation: await fetchRelaxation("session", instance.id),
+                },
+              ],
+            });
+          }
+        }
+
+        if (constraint.stakeholder === "Room") {
+          const rooms = await api.get<{ id: string; name: string }[]>("/rooms/");
+
+          for (const room of rooms) {
+            const instances = await api.get<
+              { id: string; constraint_id: string; is_activated: boolean }[]
+            >(`/rooms/${room.id}/constraints`);
+
+            const instance = instances.find(
+              (item) => item.constraint_id === constraint.id && item.is_activated,
+            );
+            if (!instance) continue;
+
+            groups.push({
+              key: room.id,
+              label: room.name,
+              isDayScoped: false,
+              leaves: [
+                {
+                  key: instance.id,
+                  label: room.name,
+                  infoText: "",
+                  instanceType: "room",
+                  instanceId: instance.id,
+                  relaxation: await fetchRelaxation("room", instance.id),
+                },
+              ],
+            });
+          }
+        }
+
+        if (groups.length > 0) next[constraint.id] = groups;
+      }
+
+      if (!cancelled) {
+        setOverviewEntitiesByConstraint(next);
+        setOverviewLoading(false);
+      }
+    }
+
+    loadOverview().catch(() => {
+      if (!cancelled) {
+        setOverviewEntitiesByConstraint({});
+        setOverviewLoading(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data, constraintDefinitions]);
+
+  function toggleOverviewStakeholder(stakeholder: string) {
+    setOpenOverviewStakeholders((current) => {
+      const next = new Set(current);
+      next.has(stakeholder) ? next.delete(stakeholder) : next.add(stakeholder);
+      return next;
+    });
+  }
+
+  function toggleOverviewConstraint(constraintId: string) {
+    setOpenOverviewConstraints((current) => {
+      const next = new Set(current);
+      next.has(constraintId) ? next.delete(constraintId) : next.add(constraintId);
+      return next;
+    });
+  }
+
+  function toggleOverviewEntity(constraintId: string, entityKey: string) {
+    const key = `${constraintId}:${entityKey}`;
+    setOpenOverviewEntities((current) => {
+      const next = new Set(current);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+
+  const activeOverviewConstraintCount = constraintDefinitions.filter(
+    (constraint) => (overviewEntitiesByConstraint[constraint.id]?.length ?? 0) > 0,
+  ).length;
+
+  const selectedEventDayTime = useMemo(() => {
+    if (!selectedEvent) return null;
+
+    const start = new Date(selectedEvent.session.start);
+    const end = new Date(selectedEvent.session.end);
+
+    const day = start.toLocaleDateString("en-US", { weekday: "long" });
+    const startTime = start.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const endTime = end.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+
+    return `${day} ${startTime}–${endTime}`;
+  }, [selectedEvent]);
 
   const requestedSlotIds = useMemo(() => {
     if (selectedDay && selectedTime) {
@@ -296,28 +763,13 @@ export function ReschedulePage() {
     );
   }
 
-  if (!selectedEvent) {
-    return (
-      <section className="reschedule-page">
-        <Link to="/" className="back-link">
-          ← Back to timetable
-        </Link>
-
-        <div className="reschedule-card">
-          <h1>Session not found</h1>
-          <p>We could not find the class you want to reschedule.</p>
-        </div>
-      </section>
-    );
-  }
-
   const schedulePreviewItems = useMemo(() => {
     if (!selectedEvent) return [];
     const { session, programs, cohorts } = selectedEvent;
 
     // 👇 resolve requested lecturer vs current lecturer, same fallback rule as step 2
     const lecturer = selectedLecturer
-      ? timetableData.lecturers.find((l) => l.id === selectedLecturer)
+      ? data!.lecturers.find((l) => l.id === selectedLecturer)
       : selectedEvent.lecturer;
 
     const items = [];
@@ -328,7 +780,7 @@ export function ReschedulePage() {
         type: "lecturer" as const,
         label: `Lecturer: ${lecturer.name}`,
         sessions: getBusySlots(
-          timetableData.sessions,
+          data!.sessions,
           (s) => s.lecturerId === lecturer.id,
           session.id,
         ),
@@ -343,7 +795,7 @@ export function ReschedulePage() {
         type: "cohort" as const,
         label: `Cohort: ${cohort.name}`,
         sessions: getBusySlots(
-          timetableData.sessions,
+          data!.sessions,
           (s) => s.cohortIds.includes(cohort.id),
           session.id,
         ),
@@ -358,7 +810,7 @@ export function ReschedulePage() {
         type: "program" as const,
         label: `Program: ${program.name}`,
         sessions: getBusySlots(
-          timetableData.sessions,
+          data!.sessions,
           (s) => s.programIds.includes(program.id),
           session.id,
         ),
@@ -376,7 +828,7 @@ export function ReschedulePage() {
         type: "room" as const,
         label: `Room: ${room}`,
         sessions: getBusySlots(
-          timetableData.sessions,
+          data!.sessions,
           (s) => s.room === room,
           session.id,
         ),
@@ -388,6 +840,21 @@ export function ReschedulePage() {
     return items;
   }, [selectedEvent, selectedLecturer, selectedRoom]);
 
+  if (!selectedEvent) {
+    return (
+      <section className="reschedule-page">
+        <Link to="/" className="back-link">
+          ← Back to timetable
+        </Link>
+
+        <div className="reschedule-card">
+          <h1>Session not found</h1>
+          <p>We could not find the class you want to reschedule.</p>
+        </div>
+      </section>
+    );
+  }
+
   const statusTwoSlotIds = ["tue-10", "tue-11"];
   const statusThreeRoom = "Room B204";
   const statusThreeSlotIds = requestedSlotIds.length
@@ -395,76 +862,14 @@ export function ReschedulePage() {
     : currentSlotIds;
 
   const inspectedLecturer =
-    timetableData.lecturers.find(
+    data!.lecturers.find(
       (lecturer) => lecturer.name === activeLecturerConflict.label,
-    ) ?? selectedEvent.lecturer ?? timetableData.lecturers[0];
+    ) ?? selectedEvent.lecturer ?? data!.lecturers[0];
 
   const lecturerPreviewSlotIds = requestedSlotIds.length
     ? requestedSlotIds
     : currentSlotIds;
 
-  const constraintGroups = [
-    {
-      title: "Lecturer",
-      items: [
-        {
-          rule: "Lecturers cannot teach more than 1 class at a time",
-          relaxation: null,
-          relaxable: false,
-        },
-        {
-          rule: "Dr. Maria Chen is unavailable on days: MON, TUES",
-          relaxation: null,
-          relaxable: false,
-        },
-        {
-          rule: "Dr. Maria Chen must have lunch break",
-          relaxation: "Currently relaxed for THURS",
-          relaxable: true,
-        },
-        {
-          rule: "Dr. Maria Chen must have maximum 1 hour teaching per day",
-          relaxation: "Currently relaxed for FRI",
-          relaxable: true,
-        },
-      ],
-    },
-    {
-      title: "Cohorts",
-      items: [
-        {
-          rule: "CS Year 1 can have maximum 3 teaching hours per day",
-          relaxation: "Currently set to 2 hours a day for MON",
-          relaxable: true,
-        },
-        {
-          rule: "DS Year 1 can have maximum 3 teaching hours per day",
-          relaxation: "Currently disabled for MON",
-          relaxable: true,
-        },
-      ],
-    },
-    {
-      title: "Rooms / class",
-      items: [
-        {
-          rule: "A room can have maximum one booking at a time",
-          relaxation: null,
-          relaxable: false,
-        },
-        {
-          rule: "CS101 needs a class with: LINUX, PROJECTOR",
-          relaxation: "PROJECTOR is currently relaxed",
-          relaxable: true,
-        },
-        {
-          rule: "CS101 needs a room with capacity of 50 people",
-          relaxation: "Currently relaxed to 40 people",
-          relaxable: true,
-        },
-      ],
-    },
-  ];
 
 
   function handleSaveSolution() {
@@ -553,14 +958,12 @@ export function ReschedulePage() {
               : "find-any-time";
 
     const activeConstraints: SavedSolution["constraints"] =
-      constraintGroups.flatMap((group) =>
-        group.items.map((item) => ({
-          group: group.title as SavedSolution["constraints"][number]["group"],
-          rule: item.rule,
-          state: item.relaxation ?? "Active",
-          relaxable: item.relaxable,
-        })),
-      );
+      relatedConstraints.map((row) => ({
+        group: row.group,
+        rule: row.constraintName,
+        state: row.relaxation ? describeRelaxation(row.relaxation) : "Active",
+        relaxable: row.relaxable,
+      }));
 
     const savedSolution: SavedSolution = {
       id: solutionId,
@@ -612,7 +1015,7 @@ export function ReschedulePage() {
       ],
       constraints: activeConstraints,
       objectives: objectives.map((objective) => ({ ...objective })),
-      resultingSessions: timetableData.sessions.map((session) =>
+      resultingSessions: data!.sessions.map((session) =>
         session.id === selectedEvent.session.id
           ? {
               ...session,
@@ -636,12 +1039,14 @@ export function ReschedulePage() {
       </Link>
 
       <div className="reschedule-header">
-        <h1>Reschedule class - CS101</h1>
+        <h1>
+          Reschedule class - {selectedModule?.code ?? "Unknown module"}
+        </h1>
 
         <div className="reschedule-meta">
           <div className="meta-item">
             <Calendar size={18} />
-            <span>Session 1</span>
+            <span>{selectedModule?.title ?? "Untitled class"}</span>
           </div>
 
           <div className="meta-item">
@@ -651,7 +1056,7 @@ export function ReschedulePage() {
 
           <div className="meta-item">
             <Clock size={18} />
-            <span>Wednesday 10:00–12:00</span>
+            <span>{selectedEventDayTime ?? "Time TBC"}</span>
           </div>
 
           <div className="meta-item">
@@ -803,7 +1208,7 @@ export function ReschedulePage() {
                         <option value="" disabled>
                           Select a lecturer
                         </option>
-                        {timetableData.lecturers.map((lecturer) => (
+                        {data!.lecturers.map((lecturer) => (
                           <option key={lecturer.id} value={lecturer.id}>
                             {lecturer.name}
                           </option>
@@ -873,7 +1278,7 @@ export function ReschedulePage() {
                   <div className="impact-chips">
                     <span className="impact-chip">
                       {selectedLecturer
-                        ? timetableData.lecturers.find(
+                        ? data!.lecturers.find(
                             (l) => l.id === selectedLecturer,
                           )?.name
                         : (selectedEvent.lecturer?.name ?? "Unassigned")}
@@ -999,11 +1404,12 @@ export function ReschedulePage() {
 
           {step === 3 && (
             <>
-              <h2>Related constraints</h2>
+              <h2>Active constraints overview</h2>
 
               <p className="step-description">
-                These constraints are currently active and will influence the
-                optimization for this rescheduling request.
+                Read-only overview of every active constraint currently configured
+                in the timetable. Expand a section to quickly inspect where each
+                rule applies.
               </p>
 
               <Link to="/constraints" className="review-constraints-link">
@@ -1011,44 +1417,177 @@ export function ReschedulePage() {
                 <ExternalLink size={16} />
               </Link>
 
-              <div className="constraints-section">
-                {constraintGroups.map((group) => (
-                  <div key={group.title} className="constraint-group-block">
-                    <div className="constraint-group-heading">
-                      <h4>{group.title}</h4>
-                      <span>{group.items.length}</span>
-                    </div>
+              {overviewLoading && (
+                <p className="step-description">Loading active constraints…</p>
+              )}
 
-                    <div className="constraints-table">
-                      <div className="constraints-table-header">
-                        <span>Constraint</span>
-                        <span>Current state</span>
-                        <span>Type</span>
-                      </div>
+              {!overviewLoading && activeOverviewConstraintCount === 0 && (
+                <p className="step-description">
+                  No active constraints are currently configured.
+                </p>
+              )}
 
-                      {group.items.map((item) => (
-                        <div key={item.rule} className="constraints-table-row">
-                          <span className="constraint-name">{item.rule}</span>
+              {!overviewLoading && activeOverviewConstraintCount > 0 && (
+                <div className="constraint-overview-list">
+                  {OVERVIEW_STAKEHOLDERS.map((stakeholder) => {
+                    const constraintsForStakeholder = constraintDefinitions.filter(
+                      (constraint) =>
+                        constraint.stakeholder === stakeholder &&
+                        (overviewEntitiesByConstraint[constraint.id]?.length ?? 0) > 0,
+                    );
 
-                          <span className="constraint-state">
-                            {item.relaxation ?? "Active"}
+                    if (constraintsForStakeholder.length === 0) return null;
+
+                    const stakeholderOpen = openOverviewStakeholders.has(stakeholder);
+
+                    return (
+                      <section
+                        key={stakeholder}
+                        className="constraint-group-block constraint-overview-group"
+                      >
+                        <button
+                          type="button"
+                          className="constraint-overview-header"
+                          onClick={() => toggleOverviewStakeholder(stakeholder)}
+                          aria-expanded={stakeholderOpen}
+                        >
+                          <span>
+                            <strong>{stakeholder}</strong>
+                            <small>
+                              {constraintsForStakeholder.length}{" "}
+                              {constraintsForStakeholder.length === 1 ? "rule" : "rules"}
+                            </small>
                           </span>
+                          <span>{stakeholderOpen ? "−" : "+"}</span>
+                        </button>
 
-                          <span
-                            className={
-                              item.relaxable
-                                ? "constraint-type-badge relaxable"
-                                : "constraint-type-badge unrelaxable"
-                            }
-                          >
-                            {item.relaxable ? "Relaxable" : "Unrelaxable"}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
+                        {stakeholderOpen && (
+                          <div className="constraint-overview-content">
+                            {constraintsForStakeholder.map((constraint) => {
+                              const groups =
+                                overviewEntitiesByConstraint[constraint.id] ?? [];
+                              const constraintOpen = openOverviewConstraints.has(
+                                constraint.id,
+                              );
+                              const instanceCount = groups.reduce(
+                                (total, group) => total + group.leaves.length,
+                                0,
+                              );
+
+                              return (
+                                <div
+                                  key={constraint.id}
+                                  className="constraint-overview-rule"
+                                >
+                                  <button
+                                    type="button"
+                                    className="constraint-overview-rule-header"
+                                    onClick={() =>
+                                      toggleOverviewConstraint(constraint.id)
+                                    }
+                                    aria-expanded={constraintOpen}
+                                  >
+                                    <span className="constraint-name">
+                                      {constraint.name}
+                                      <small>{instanceCount} active</small>
+                                    </span>
+
+                                    <span
+                                      className={
+                                        constraint.type === "relaxable"
+                                          ? "constraint-type-badge relaxable"
+                                          : "constraint-type-badge unrelaxable"
+                                      }
+                                    >
+                                      {constraint.type === "relaxable"
+                                        ? "Relaxable"
+                                        : "Unrelaxable"}
+                                    </span>
+                                  </button>
+
+                                  {constraintOpen && (
+                                    <div className="constraint-overview-entities">
+                                      {groups.map((group) => {
+                                        if (!group.isDayScoped) {
+                                          const leaf = group.leaves[0];
+                                          return (
+                                            <div
+                                              key={leaf.key}
+                                              className="constraints-table-row constraint-overview-leaf"
+                                            >
+                                              <span className="constraint-name">
+                                                {leaf.label}
+                                                {leaf.infoText && (
+                                                  <small>{leaf.infoText}</small>
+                                                )}
+                                              </span>
+                                              <span className="constraint-state">
+                                                {leaf.relaxation
+                                                  ? describeRelaxation(leaf.relaxation)
+                                                  : "Active"}
+                                              </span>
+                                            </div>
+                                          );
+                                        }
+
+                                        const entityKey = `${constraint.id}:${group.key}`;
+                                        const entityOpen =
+                                          openOverviewEntities.has(entityKey);
+
+                                        return (
+                                          <div
+                                            key={group.key}
+                                            className="constraint-overview-entity"
+                                          >
+                                            <button
+                                              type="button"
+                                              className="constraint-overview-entity-header"
+                                              onClick={() =>
+                                                toggleOverviewEntity(
+                                                  constraint.id,
+                                                  group.key,
+                                                )
+                                              }
+                                              aria-expanded={entityOpen}
+                                            >
+                                              <span>{group.label}</span>
+                                              <span>{entityOpen ? "−" : "+"}</span>
+                                            </button>
+
+                                            {entityOpen && (
+                                              <div className="constraint-overview-days">
+                                                {group.leaves.map((leaf) => (
+                                                  <div
+                                                    key={leaf.key}
+                                                    className="constraints-table-row constraint-overview-leaf"
+                                                  >
+                                                    <span className="constraint-name">
+                                                      {leaf.label}
+                                                    </span>
+                                                    <span className="constraint-state">
+                                                      {leaf.relaxation
+                                                        ? describeRelaxation(leaf.relaxation)
+                                                        : "Active"}
+                                                    </span>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </section>
+                    );
+                  })}
+                </div>
+              )}
             </>
           )}
 
@@ -1367,7 +1906,7 @@ export function ReschedulePage() {
                             <MiniTimetablePreview
                               title={`Lecturer: ${selectedEvent.lecturer.name}`}
                               busySlots={getBusySlots(
-                                timetableData.sessions,
+                                data!.sessions,
                                 (session) =>
                                   session.lecturerId ===
                                   selectedEvent.lecturer?.id,
@@ -1389,7 +1928,7 @@ export function ReschedulePage() {
                               <MiniTimetablePreview
                                 title={`Cohort: ${cohort.name}`}
                                 busySlots={getBusySlots(
-                                  timetableData.sessions,
+                                  data!.sessions,
                                   (session) =>
                                     session.cohortIds.includes(cohort.id),
                                   selectedEvent.session.id,
@@ -1463,7 +2002,7 @@ export function ReschedulePage() {
                           <MiniTimetablePreview
                             title={`Room: ${statusThreeRoom}`}
                             busySlots={getBusySlots(
-                              timetableData.sessions,
+                              data!.sessions,
                               (session) => session.room === statusThreeRoom,
                               selectedEvent.session.id,
                             )}
@@ -1551,7 +2090,7 @@ export function ReschedulePage() {
                                 <MiniTimetablePreview
                                   title={`Cohort: ${cohort.name}`}
                                   busySlots={getBusySlots(
-                                    timetableData.sessions,
+                                    data!.sessions,
                                     (session) =>
                                       session.cohortIds.includes(cohort.id),
                                     selectedEvent.session.id,
@@ -1572,7 +2111,7 @@ export function ReschedulePage() {
                                 <MiniTimetablePreview
                                   title={`Lecturer: ${selectedEvent.lecturer.name}`}
                                   busySlots={getBusySlots(
-                                    timetableData.sessions,
+                                    data!.sessions,
                                     (session) =>
                                       session.lecturerId ===
                                       selectedEvent.lecturer?.id,
@@ -1594,7 +2133,7 @@ export function ReschedulePage() {
                                   <MiniTimetablePreview
                                     title={`Cohort: ${cohort.name}`}
                                     busySlots={getBusySlots(
-                                      timetableData.sessions,
+                                      data!.sessions,
                                       (session) =>
                                         session.cohortIds.includes(cohort.id),
                                       selectedEvent.session.id,
@@ -1613,7 +2152,7 @@ export function ReschedulePage() {
                                 <MiniTimetablePreview
                                   title={`Lecturer: ${selectedEvent.lecturer.name}`}
                                   busySlots={getBusySlots(
-                                    timetableData.sessions,
+                                    data!.sessions,
                                     (session) =>
                                       session.lecturerId ===
                                       selectedEvent.lecturer?.id,
@@ -1633,7 +2172,7 @@ export function ReschedulePage() {
                                 <MiniTimetablePreview
                                   title={`Cohort: ${cohort.name}`}
                                   busySlots={getBusySlots(
-                                    timetableData.sessions,
+                                    data!.sessions,
                                     (session) =>
                                       session.cohortIds.includes(cohort.id),
                                     selectedEvent.session.id,
@@ -1649,7 +2188,7 @@ export function ReschedulePage() {
                               <MiniTimetablePreview
                                 title={`Room: ${selectedRoom ?? selectedEvent.session.room ?? "Room TBC"}`}
                                 busySlots={getBusySlots(
-                                  timetableData.sessions,
+                                  data!.sessions,
                                   (session) =>
                                     session.room ===
                                     (selectedRoom ?? selectedEvent.session.room),
@@ -1740,7 +2279,7 @@ export function ReschedulePage() {
                             <MiniTimetablePreview
                               title={`Lecturer: ${inspectedLecturer.name}`}
                               busySlots={getBusySlots(
-                                timetableData.sessions,
+                                data!.sessions,
                                 (session) =>
                                   session.lecturerId === inspectedLecturer.id,
                                 selectedEvent.session.id,

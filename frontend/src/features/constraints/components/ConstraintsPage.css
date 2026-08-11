@@ -1,267 +1,359 @@
 .constraints-page {
-  display: grid;
-  gap: 32px;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px;
 }
 
 .constraints-header {
-  padding: 64px 12px 32px;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 18px;
-  text-align: left;
+  gap: 6px;
+  margin-bottom: 24px;
 }
 
 .constraints-header h1 {
   margin: 0;
-  color: #0f172a;
-  font-size: 72px;
-  line-height: 0.95;
-  font-weight: 800;
-  letter-spacing: -0.07em;
+  font-size: 28px;
+  font-weight: 700;
+  color: #1e2340;
+  line-height: 1.2;
 }
 
 .constraints-header p {
   margin: 0;
-  max-width: 680px;
-  color: #4b5563;
-  font-size: 22px;
-  line-height: 1.45;
-}
-
-.eyebrow {
-  margin: 0 0 14px;
-  color: #7c3aed;
-  font-size: var(--text-xs);
-  font-weight: var(--font-bold);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-}
-
-.constraints-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
-}
-
-.constraint-group-card {
-  min-height: 420px;
-  background: white;
-  border: 1px solid #ede9fe;
-  border-radius: 22px;
-  padding: 24px;
-  box-shadow: 0 18px 45px rgba(76, 29, 149, 0.08);
-}
-
-.constraint-card-header {
-  display: grid;
-  grid-template-columns: 52px 1fr auto;
-  gap: 14px;
-  align-items: start;
-  margin-bottom: 24px;
-  padding-bottom: 22px;
-  border-bottom: 1px solid #ede9fe;
-}
-
-.constraint-card-icon {
-  width: 52px;
-  height: 52px;
-  border-radius: 18px;
-  display: grid;
-  place-items: center;
-  background: #f3e8ff;
-  font-size: 24px;
-}
-
-.constraint-group-card h2 {
-  margin: 0;
-  color: #111827;
-  font-size: var(--text-lg);
-}
-
-.constraint-card-header p {
-  margin: 6px 0 0;
-  color: #6b7280;
-  font-size: var(--text-sm);
+  max-width: 640px;
+  font-size: 14px;
+  color: #6b7290;
   line-height: 1.5;
 }
 
-.constraint-count {
-  background: #f3e8ff;
-  color: #6b21a8;
-  border-radius: 999px;
-  padding: 7px 10px;
-  font-size: var(--text-xs);
-  font-weight: var(--font-bold);
-  white-space: nowrap;
-}
-
-.constraint-list {
-  display: grid;
+.constraint-bar-list {
+  display: flex;
+  flex-direction: column;
   gap: 14px;
 }
 
-.constraint-row-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
+.constraint-bar {
+  border-radius: 16px;
+  background: #eef2fd;
+  overflow: hidden;
 }
 
-.constraint-row-icon.purple {
-  background: #f3e8ff;
-  color: #7c3aed;
+.constraint-bar-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
 }
 
-.constraint-row-icon.green {
-  background: #dcfce7;
-  color: #16a34a;
+.constraint-bar-header-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
 }
 
-.constraint-row-icon.blue {
-  background: #dbeafe;
-  color: #2563eb;
+.constraint-bar-chevron {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #3f4b8f;
+}
+
+.constraint-bar-copy h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #1e2340;
+}
+
+.constraint-bar-copy p {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: #6b7290;
+}
+
+.constraint-bar-count {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #3f4b8f;
+  background: #ffffff;
+  border-radius: 999px;
+  padding: 6px 14px;
+  white-space: nowrap;
+}
+
+.constraint-bar-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 20px 18px;
+}
+
+/* nested bars (constraint-level inside a stakeholder, or day-fold inside an entity) */
+.constraint-bar-nested {
+  margin: 0;
+  border-radius: 10px;
+}
+
+.constraint-bar-nested .constraint-bar-header {
+  padding: 10px 14px;
+}
+
+.constraint-bar-nested .constraint-bar-chevron {
+  width: 26px;
+  height: 26px;
+}
+
+.constraint-bar-nested .constraint-bar-content {
+  padding: 0 14px 12px;
+}
+
+/* extra breathing room when this container's entities are themselves folds
+   (day-scoped groups) rather than flat leaf rows — one more level of nesting
+   reads as cramped at the same 8px gap used for flat lists */
+.constraint-bar-content-foldable {
+  gap: 14px;
+}
+
+/* flat constraints (no fold level between the constraint header and its
+   entity rows) need explicit breathing room here, since a fold layer
+   would otherwise be what visually separates the header from the rows */
+.constraint-bar-content-flat {
+  margin-top: 10px;
 }
 
 .constraint-row {
   width: 100%;
-  min-height: 72px;
-  border: 1px solid transparent;
-  border-radius: 16px;
-  padding: 14px 16px;
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto 16px;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  text-align: left;
+  padding: 12px 14px;
+  background: #ffffff;
+  border: none;
+  border-radius: 10px;
   cursor: pointer;
-  font-weight: var(--font-semibold);
+  text-align: left;
+  font: inherit;
 }
 
-.constraint-row > span:nth-child(2) {
-  min-width: 0;
-  line-height: 1.25;
+.constraint-row-icon {
+  color: #6b7290;
+  flex-shrink: 0;
+  margin-right: 8px;
 }
 
-.constraint-row::after {
-  content: "›";
-  color: #6b7280;
-  font-size: 24px;
-}
-
-.constraint-row:hover {
-  background: #f3e8ff;
-  border-color: #ddd6fe;
-  transform: translateY(-1px);
-}
-
-.constraint-type {
+.constraint-row-chevron {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
   border-radius: 999px;
-  padding: 5px 8px;
-  font-size: 11px;
-  font-weight: var(--font-bold);
-  text-transform: capitalize;
+  background: #f4f5fb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #3f4b8f;
+  margin-right: 4px;
+}
+
+.constraint-type-badge {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 999px;
   white-space: nowrap;
 }
 
-.constraint-type {
-  background: #fef3c7;
-  color: #b45309;
+.constraint-type-badge.unrelaxable {
+  color: #9a3b3b;
+  background: #fbe9e9;
 }
 
-/* constraint type */
-.constraint-type.unrelaxable {
-  background: #fee2e2;
-  color: #dc2626;
+.constraint-type-badge.relaxable {
+  color: #2f7a4f;
+  background: #e6f5ec;
 }
 
-.constraint-type.relaxable {
-  background: #dcfce7;
-  color: #15803d;
-}
-
-/* constraint note */
-.constraints-note {
+/* individual entity/day rows, shared visual language with the modal's rows */
+.constraint-detail-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #ffffff;
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+
+.constraint-detail-row:last-child {
+  margin-bottom: 0;
+}
+
+.constraint-detail-row-clickable {
+  width: 100%;
+  border: none;
+  cursor: pointer;
   text-align: left;
-  gap: 14px;
-  border: 1px solid #ede9fe;
-  background: #faf7ff;
-  border-radius: 16px;
-  padding: 16px 20px;
-  color: #4b5563;
-  font-weight: var(--font-semibold);
+  font: inherit;
+}
+
+.constraint-detail-row-clickable:hover {
+  background: #f4f5fb;
+}
+
+.constraint-detail-row-inline {
+  flex-wrap: wrap;
+}
+
+.constraint-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #1e2340;
+  flex-wrap: wrap;
+}
+
+.constraint-row-main strong {
+  font-size: 13px;
+  color: #1e2340;
+}
+
+.constraint-row-main span {
+  font-size: 12px;
+  color: #6b7290;
+}
+
+.constraint-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.constraint-empty-state {
+  font-size: 13px;
+  color: #6b7290;
+  padding: 8px 4px;
+  margin: 0;
+}
+
+.constraints-loading,
+.constraints-error {
+  font-size: 14px;
+  color: #6b7290;
+  padding: 32px;
+}
+
+.constraints-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 24px;
+  padding: 14px 18px;
+  background: #eef2fd;
+  border-radius: 12px;
+}
+
+.constraints-note-icon {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #3f4b8f;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .constraints-note p {
   margin: 0;
+  font-size: 14px;
+  color: #1e2340;
+  line-height: 1.5;
 }
 
-.constraints-note-icon {
-  width: 28px;
-  height: 28px;
-  border: 2px solid #7c3aed;
+/* status badges — shared by page rows and modal */
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
   border-radius: 999px;
-  color: #7c3aed;
-  display: grid;
-  place-items: center;
-  font-weight: var(--font-bold);
+  font-size: 11px;
+  font-weight: 500;
+  width: fit-content;
 }
 
-/* stakeholder colorgrading */
-.constraint-group-card.purple .constraint-row {
-    background: #faf7ff;
+.status-badge.active {
+  color: #2f7a4f;
+  background: #e6f5ec;
 }
 
-.constraint-group-card.green .constraint-row {
-    background: #f7fff8;
+.status-badge.disabled {
+  color: #9a3b3b;
+  background: #fbe9e9;
 }
 
-.constraint-group-card.blue .constraint-row {
-    background: #f8fbff;
+.status-badge.relaxed {
+  color: #3f4b8f;
+  background: #e3e8fb;
 }
 
-/* icons */
-.constraint-card-icon.purple,
-.constraint-count.purple {
-  background: #f3e8ff;
-  color: #7c3aed;
+/* shared buttons */
+.secondary-action-button,
+.primary-action-button {
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
-.constraint-card-icon.green,
-.constraint-count.green {
-  background: #dcfce7;
-  color: #16a34a;
+.secondary-action-button {
+  background: white;
+  color: #3f4b8f;
+  border: 1px solid #d7ddf5;
 }
 
-.constraint-card-icon.blue,
-.constraint-count.blue {
-  background: #dbeafe;
-  color: #2563eb;
+.primary-action-button {
+  border: none;
+  background: #3f4b8f;
+  color: white;
 }
 
-.constraint-group-card.purple {
-  border-top: 5px solid #7c3aed;
+.primary-action-button:disabled,
+.secondary-action-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
-.constraint-group-card.green {
-  border-top: 5px solid #22c55e;
+.preview-constraint-link {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #3f4b8f;
+  white-space: nowrap;
 }
 
-.constraint-group-card.blue {
-  border-top: 5px solid #3b82f6;
-}
-
-.constraint-group-card.purple .constraint-row {
-  background: #faf7ff;
-}
-
-.constraint-group-card.green .constraint-row {
-  background: #f0fdf4;
-}
-
-.constraint-group-card.blue .constraint-row {
-  background: #eff6ff;
+.constraint-detail-row-clickable:hover .preview-constraint-link {
+  text-decoration: underline;
 }

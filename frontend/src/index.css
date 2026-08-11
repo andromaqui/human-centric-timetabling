@@ -1,5 +1,9 @@
+@import url("https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&display=swap");
+
 :root {
-  --font-family: Inter, system-ui, sans-serif;
+  --font-family: "Figtree", system-ui, sans-serif;
+  --heading: "Figtree", system-ui, sans-serif;
+  --text-h: #1e2340;
 
   --text-xs: 12px;
   --text-sm: 14px;
@@ -16,8 +20,8 @@
 body {
   margin: 0;
   font-family: var(--font-family);
-  background: #f5f3ff;
-  color: #1f1235;
+  background: #eef2fd;
+  color: #1e2340;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -45,16 +49,10 @@ body {
   min-height: 100svh;
 }
 
-body {
-  margin: 0;
-  background: #f5f3ff;
-  color: #1f1235;
-}
-
 h1,
 h2 {
   font-family: var(--heading);
-  font-weight: 500;
+  font-weight: 700;
   color: var(--text-h);
 }
 

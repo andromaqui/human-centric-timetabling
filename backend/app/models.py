@@ -20,7 +20,6 @@ class Room(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # comma-separated for now, same tradeoff as Module.required_equipment
     equipment: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
@@ -50,8 +49,8 @@ class LecturerUnavailability(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     lecturer_id: Mapped[str] = mapped_column(ForeignKey("lecturers.id"))
-    day: Mapped[str] = mapped_column(String, nullable=False)   # e.g. "mon"
-    hour: Mapped[int] = mapped_column(Integer, nullable=False) # e.g. 9
+    day: Mapped[str] = mapped_column(String, nullable=False)
+    hour: Mapped[int] = mapped_column(Integer, nullable=False)
 
     lecturer: Mapped["Lecturer"] = relationship(back_populates="unavailability")
 
@@ -63,14 +62,9 @@ class Module(Base):
     code: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
     required_capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # comma-separated for now, e.g. "Projector,Whiteboard" — fine until
-    # you need to query "modules that need a Linux lab", at which point
-    # normalize into its own table
     required_equipment: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
-# Sessions have many-to-many relations to programs and cohorts,
-# so we need join tables.
 session_programs = Table(
     "session_programs",
     Base.metadata,
@@ -110,8 +104,70 @@ class Constraint(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False)
-    stakeholder: Mapped[str] = mapped_column(String, nullable=False)
-    type: Mapped[str] = mapped_column(String, nullable=False)
+    stakeholder: Mapped[str] = mapped_column(String, nullable=False)  # "Lecturer" | "Cohort" | "Session" | "Room"
+    type: Mapped[str] = mapped_column(String, nullable=False)         # "unrelaxable" | "relaxable"
+
+
+class SessionConstraint(Base):
+    __tablename__ = "session_constraints"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"))
+    constraint_id: Mapped[str] = mapped_column(ForeignKey("constraints.id"))
+    is_activated: Mapped[bool] = mapped_column(default=True)
+
+    session: Mapped["Session"] = relationship()
+    constraint: Mapped["Constraint"] = relationship()
+
+
+class LecturerConstraint(Base):
+    __tablename__ = "lecturer_constraints"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    lecturer_id: Mapped[str] = mapped_column(ForeignKey("lecturers.id"))
+    constraint_id: Mapped[str] = mapped_column(ForeignKey("constraints.id"))
+    day: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_activated: Mapped[bool] = mapped_column(default=True)
+
+    lecturer: Mapped["Lecturer"] = relationship()
+    constraint: Mapped["Constraint"] = relationship()
+
+
+class CohortConstraint(Base):
+    __tablename__ = "cohort_constraints"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    cohort_id: Mapped[str] = mapped_column(ForeignKey("cohorts.id"))
+    constraint_id: Mapped[str] = mapped_column(ForeignKey("constraints.id"))
+    day: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_activated: Mapped[bool] = mapped_column(default=True)
+
+    cohort: Mapped["Cohort"] = relationship()
+    constraint: Mapped["Constraint"] = relationship()
+
+
+class RoomConstraint(Base):
+    __tablename__ = "room_constraints"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"))
+    constraint_id: Mapped[str] = mapped_column(ForeignKey("constraints.id"))
+    is_activated: Mapped[bool] = mapped_column(default=True)
+
+    room: Mapped["Room"] = relationship()
+    constraint: Mapped["Constraint"] = relationship()
+
+
+class ConstraintRelaxation(Base):
+    __tablename__ = "constraint_relaxations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    instance_type: Mapped[str] = mapped_column(String, nullable=False)  # "session" | "lecturer" | "cohort" | "room"
+    instance_id: Mapped[str] = mapped_column(String, nullable=False)
+    relaxation_type: Mapped[str] = mapped_column(String, nullable=False)  # "disable" | "adjust"
+    details: Mapped[str | None] = mapped_column(String, nullable=True)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 class CandidateSolution(Base):

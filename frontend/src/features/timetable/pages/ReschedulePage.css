@@ -42,15 +42,15 @@
 
 .constraint-group-heading h4 {
   margin: 0;
-  color: #6d28d9;
+  color: #3f4b8f;
   font-size: 16px;
   font-weight: 900;
   text-transform: uppercase;
 }
 
 .constraint-group-heading span {
-  background: #f3e8ff;
-  color: #7c3aed;
+  background: #eef2fd;
+  color: #3f4b8f;
   border-radius: 999px;
   padding: 4px 9px;
   font-size: 12px;
@@ -60,7 +60,7 @@
 .constraints-table {
   overflow: hidden;
   background: white;
-  border: 1px solid #ede9fe;
+  border: 1px solid #d7ddf5;
   border-radius: 16px;
 }
 
@@ -74,16 +74,16 @@
 }
 
 .constraints-table-header {
-  background: #faf7ff;
-  color: #6b7280;
+  background: #eef2fd;
+  color: #6b7290;
   font-size: 12px;
   font-weight: 900;
   text-transform: uppercase;
 }
 
 .constraints-table-row {
-  border-top: 1px solid #ede9fe;
-  color: #2e1065;
+  border-top: 1px solid #d7ddf5;
+  color: #1e2340;
   font-weight: 650;
 }
 
@@ -97,18 +97,18 @@
 }
 
 .constraint-state {
-  background: #f3e8ff;
-  color: #6d28d9;
+  background: #eef2fd;
+  color: #3f4b8f;
 }
 
 .constraint-type-badge.relaxable {
-  background: #dcfce7;
-  color: #15803d;
+  background: #e6f5ec;
+  color: #2f7a4f;
 }
 
 .constraint-type-badge.unrelaxable {
-  background: #fee2e2;
-  color: #dc2626;
+  background: #fbe9e9;
+  color: #9a3b3b;
 }
 
 .review-constraints-link {
@@ -116,23 +116,23 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid #ddd6fe;
+  border: 1px solid #d7ddf5;
   border-radius: 999px;
   padding: 10px 16px;
   background: white;
-  color: #7c3aed;
+  color: #3f4b8f;
   font-weight: 900;
   text-decoration: none;
 }
 
 .review-constraints-link:hover {
-  background: #f3e8ff;
+  background: #eef2fd;
 }
 
 /* description */
 .step-description {
   margin: 0 0 20px;
-  color: #6b7280;
+  color: #6b7290;
   font-weight: 600;
   line-height: 1.5;
 }
@@ -140,7 +140,7 @@
 /* header */
 .reschedule-header {
   background: white;
-  border: 1px solid #ede9fe;
+  border: 1px solid #d7ddf5;
   border-radius: 24px;
   padding: 36px;
   box-shadow: 0 18px 45px rgba(76, 29, 149, 0.08);
@@ -148,7 +148,7 @@
 
 .reschedule-header h1 {
   margin: 0 0 24px;
-  color: #0f172a;
+  color: #1e2340;
   font-size: 48px;
   line-height: 1;
   letter-spacing: -0.05em;
@@ -165,7 +165,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  color: #4b5563;
+  color: #6b7290;
   font-size: 1rem;
   font-weight: 600;
 }
@@ -187,7 +187,7 @@
 
 .back-link {
   width: fit-content;
-  color: #7c3aed;
+  color: #3f4b8f;
   font-weight: 700;
   text-decoration: none;
 }
@@ -205,7 +205,7 @@
   display: grid;
   gap: 10px;
   background: white;
-  border: 1px solid #ede9fe;
+  border: 1px solid #d7ddf5;
   border-radius: 22px;
   padding: 14px;
 }
@@ -213,7 +213,7 @@
 .wizard-step {
   border: none;
   background: transparent;
-  color: #6b7280;
+  color: #6b7290;
   border-radius: 16px;
   padding: 14px;
   display: flex;
@@ -233,18 +233,18 @@
 }
 
 .wizard-step.active {
-  background: #f3e8ff;
-  color: #7c3aed;
+  background: #eef2fd;
+  color: #3f4b8f;
 }
 
 .wizard-step.active span {
-  background: #7c3aed;
+  background: #3f4b8f;
   color: white;
 }
 
 .reschedule-card {
   background: white;
-  border: 1px solid #ede9fe;
+  border: 1px solid #d7ddf5;
   border-radius: 24px;
   padding: 28px;
   box-shadow: 0 18px 45px rgba(76, 29, 149, 0.08);
@@ -252,7 +252,7 @@
 
 .reschedule-card h2 {
   margin: 0 0 20px;
-  color: #0f172a;
+  color: #1e2340;
   font-size: 32px;
   font-weight: 800;
 }
@@ -263,7 +263,7 @@
   gap: 10px;
   margin-top: 24px;
   padding-top: 20px;
-  border-top: 1px solid #ede9fe;
+  border-top: 1px solid #d7ddf5;
 }
 
 .reschedule-actions button,
@@ -278,11 +278,11 @@
 
 .secondary-button {
   background: #f3f4f6;
-  color: #374151;
+  color: #6b7290;
 }
 
 .primary-button {
-  background: #7c3aed;
+  background: #3f4b8f;
   color: white;
 }
 
@@ -304,21 +304,21 @@
 .schedule-preview-block {
   margin-top: 28px;
   padding-top: 24px;
-  border-top: 1px solid #ede9fe;
+  border-top: 1px solid #d7ddf5;
 }
 
 .schedule-preview-toggle {
-  border: 1px solid #ddd6fe;
+  border: 1px solid #d7ddf5;
   border-radius: 999px;
   padding: 10px 16px;
   background: white;
-  color: #7c3aed;
+  color: #3f4b8f;
   font-weight: 900;
   cursor: pointer;
 }
 
 .schedule-preview-toggle:hover {
-  background: #f3e8ff;
+  background: #eef2fd;
 }
 
 .schedule-preview-panel {
@@ -339,11 +339,11 @@
 }
 
 .preview-chip {
-  border: 1px solid #ddd6fe;
+  border: 1px solid #d7ddf5;
   border-radius: 999px;
   padding: 8px 12px;
   background: white;
-  color: #4c1d95;
+  color: #3f4b8f;
   font-weight: 800;
   cursor: pointer;
 }
@@ -362,7 +362,7 @@
 
 .mini-schedule-card {
   flex: 0 0 320px;
-  border: 1px solid #ede9fe;
+  border: 1px solid #d7ddf5;
   border-radius: 18px;
   background: white;
   overflow: hidden;
@@ -370,8 +370,8 @@
 
 .mini-schedule-title {
   padding: 12px 14px;
-  border-bottom: 1px solid #ede9fe;
-  color: #2e1065;
+  border-bottom: 1px solid #d7ddf5;
+  color: #1e2340;
   font-weight: 900;
 }
 
@@ -379,8 +379,8 @@
   height: 180px;
   display: grid;
   place-items: center;
-  background: #faf7ff;
-  color: #7c3aed;
+  background: #eef2fd;
+  color: #3f4b8f;
   font-weight: 800;
 }
 
@@ -394,33 +394,33 @@
 }
 
 .solution-chevron {
-  color: #6d28d9;
+  color: #3f4b8f;
   font-size: 16px;
   font-weight: 900;
 }
 
 .solution-score.good {
   width: fit-content;
-  background: #dcfce7;
-  color: #15803d;
+  background: #e6f5ec;
+  color: #2f7a4f;
 }
 
 .solution-changes {
   margin-top: 20px;
   padding-top: 18px;
-  border-top: 1px solid #ede9fe;
+  border-top: 1px solid #d7ddf5;
 }
 
 .schedule-preview-controlsss h5 {
   margin: 0 0 12px;
-  color: #2e1065;
+  color: #1e2340;
   font-size: 14px;
   font-weight: 900;
 }
 
 .solution-changes h5 {
   margin: 0 0 12px;
-  color: #2e1065;
+  color: #1e2340;
   font-size: 14px;
   font-weight: 900;
 }
@@ -430,12 +430,12 @@
   gap: 12px;
   margin: 0;
   padding-left: 20px;
-  color: #2e1065;
+  color: #1e2340;
   font-weight: 700;
 }
 
 .solution-changes li span {
-  color: #6d28d9;
+  color: #3f4b8f;
   font-weight: 900;
 }
 
@@ -447,7 +447,7 @@
 }
 
 .conflict-slot-picker span {
-  color: #6b21a8;
+  color: #3f4b8f;
   font-size: 13px;
   font-weight: 900;
   text-transform: uppercase;
@@ -457,26 +457,26 @@
 .conflict-slot-picker select {
   width: fit-content;
   min-width: 260px;
-  border: 1px solid #ddd6fe;
+  border: 1px solid #d7ddf5;
   border-radius: 999px;
   background: white;
-  color: #2e1065;
+  color: #1e2340;
   padding: 10px 14px;
   font-weight: 800;
   cursor: pointer;
 }
 
 .conflict-slot-picker select:focus {
-  outline: 3px solid #ede9fe;
-  border-color: #7c3aed;
+  outline: 3px solid #d7ddf5;
+  border-color: #3f4b8f;
 }
 
 /* option clicked */
 .request-options button {
   border-radius: 999px;
-  border: 1px solid #e0defc;
+  border: 1px solid #d7ddf5;
   background: #ffffff;
-  color: #6d28d9;
+  color: #3f4b8f;
   font-weight: 600;
   padding: 10px 20px;
   cursor: pointer;
@@ -484,12 +484,12 @@
 }
 
 .request-options button:hover {
-  background: #f5f3ff;
+  background: #eef2fd;
 }
 
 .request-options button.active {
-  background: #6d28d9;
-  border-color: #6d28d9;
+  background: #3f4b8f;
+  border-color: #3f4b8f;
   color: #ffffff;
 }
 
@@ -512,7 +512,7 @@
 .datetime-picker {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #ece9fc;
+  border-top: 1px solid #d7ddf5;
   display: flex;
   flex-direction: column;
   gap: 16px; /* space between "Day" block and "Time" block */
@@ -520,9 +520,9 @@
 
 .lecturer-select {
   border-radius: 12px;
-  border: 1px solid #e0defc;
+  border: 1px solid #d7ddf5;
   background: #ffffff;
-  color: #6d28d9;
+  color: #3f4b8f;
   font-weight: 600;
   padding: 10px 14px;
   cursor: pointer;
@@ -548,7 +548,7 @@
 
 .objective-group-heading h3 {
   margin: 0;
-  color: #6d28d9;
+  color: #3f4b8f;
   font-size: 15px;
   font-weight: 900;
   text-transform: uppercase;
@@ -558,8 +558,8 @@
 .objective-group-heading span {
   border-radius: 999px;
   padding: 4px 9px;
-  background: #f3e8ff;
-  color: #7c3aed;
+  background: #eef2fd;
+  color: #3f4b8f;
   font-size: 12px;
   font-weight: 900;
 }
@@ -574,7 +574,7 @@
   grid-template-columns: minmax(0, 1fr) minmax(160px, 220px) 48px;
   align-items: center;
   gap: 20px;
-  border: 1px solid #ede9fe;
+  border: 1px solid #d7ddf5;
   border-radius: 16px;
   padding: 14px 18px;
   background: white;
@@ -586,14 +586,14 @@
 
 .conflict-visual-section h5 {
   margin: 0 0 6px;
-  color: #2e1065;
+  color: #1e2340;
   font-size: 15px;
   font-weight: 900;
 }
 
 .conflict-visual-section p {
   margin: 0;
-  color: #6b7280;
+  color: #6b7290;
   font-weight: 600;
   line-height: 1.5;
 }
@@ -611,7 +611,7 @@
 }
 
 .objective-label {
-  color: #2e1065;
+  color: #1e2340;
   font-weight: 650;
 }
 
@@ -620,14 +620,14 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #6d28d9;
+  color: #3f4b8f;
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
 }
 
 .objective-toggle input {
-  accent-color: #7c3aed;
+  accent-color: #3f4b8f;
   cursor: pointer;
 }
 
@@ -635,13 +635,13 @@
   display: block;
   width: 100%;
   min-width: 0;
-  accent-color: #7c3aed;
+  accent-color: #3f4b8f;
   cursor: pointer;
 }
 
 .objective-weight {
   text-align: right;
-  color: #6d28d9;
+  color: #3f4b8f;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
 }
@@ -652,7 +652,7 @@
 }
 
 .objective-row.objective-disabled .objective-label {
-  color: #6b7280;
+  color: #6b7290;
 }
 
 .objective-slider:disabled {
@@ -679,5 +679,136 @@
   .objective-weight {
     grid-area: weight;
     text-align: right;
+  }
+}
+/* -------------------------------------------------------------------------- */
+/* Step 3 — read-only active constraints overview                              */
+/* -------------------------------------------------------------------------- */
+.constraint-overview-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.constraint-overview-group {
+  overflow: hidden;
+}
+
+.constraint-overview-header,
+.constraint-overview-rule-header,
+.constraint-overview-entity-header {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.constraint-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.constraint-overview-header > span:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.constraint-overview-header small,
+.constraint-overview-rule-header small,
+.constraint-overview-leaf small {
+  color: #6b7290;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.constraint-overview-content {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.constraint-overview-rule {
+  border: 1px solid #e5e7ef;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.constraint-overview-rule-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 14px;
+}
+
+.constraint-overview-rule-header .constraint-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.constraint-overview-entities {
+  border-top: 1px solid #eceef4;
+}
+
+.constraint-overview-entity + .constraint-overview-entity,
+.constraint-overview-leaf + .constraint-overview-leaf {
+  border-top: 1px solid #eceef4;
+}
+
+.constraint-overview-entity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  font-weight: 600;
+}
+
+.constraint-overview-days {
+  border-top: 1px solid #eceef4;
+  background: #fafbfe;
+}
+
+.constraint-overview-leaf {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, auto);
+  gap: 18px;
+  align-items: center;
+  padding: 11px 14px;
+}
+
+.constraint-overview-leaf .constraint-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.constraint-overview-leaf .constraint-state {
+  justify-self: end;
+  text-align: right;
+}
+
+@media (max-width: 720px) {
+  .constraint-overview-rule-header,
+  .constraint-overview-leaf {
+    align-items: flex-start;
+  }
+
+  .constraint-overview-leaf {
+    grid-template-columns: 1fr;
+  }
+
+  .constraint-overview-leaf .constraint-state {
+    justify-self: start;
+    text-align: left;
   }
 }

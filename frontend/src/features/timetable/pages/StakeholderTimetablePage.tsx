@@ -1,49 +1,44 @@
 import { Link, useSearchParams } from "react-router-dom";
 import FullCalendar from "@fullcalendar/react";
 import timeGridPlugin from "@fullcalendar/timegrid";
-import { timetableData, lecturerUnavailableSlots } from "../data/timetableData";
+
+import { useTimetableData } from "../hooks/useTimetableData";
+import { lecturerUnavailableSlots } from "../data/timetableData";
 import { mapSessionsToCalendarEvents } from "../utils/calendarMappers";
 import type { Session } from "../types";
-import "../components/TimetableCalendar.css";
 
+import "../components/TimetableCalendar.css";
 
 type StakeholderKind = "lecturer" | "cohort" | "program" | "room";
 
-function getFilteredSessions(kind: StakeholderKind | null, value: string | null) {
-  if (!kind || !value) return timetableData.sessions;
+function getFilteredSessions(
+  sessions: Session[],
+  kind: StakeholderKind | null,
+  value: string | null,
+) {
+  if (!kind || !value) return sessions;
 
-  return timetableData.sessions.filter((session) => {
-    if (kind === "lecturer") return session.lecturerId === value;
-    if (kind === "cohort") return session.cohortIds.includes(value);
-    if (kind === "program") return session.programIds.includes(value);
-    if (kind === "room") return session.room === value;
-    return true;
+  return sessions.filter((session) => {
+    if (kind === "lecturer") {
+      return session.lecturerId === value;
+    }
+
+    if (kind === "cohort") {
+      return session.cohortIds.includes(value);
+    }
+
+    if (kind === "program") {
+      return session.programIds.includes(value);
+    }
+
+    if (kind === "room") {
+      return session.room === value;
+    }
+
+    return false;
   });
 }
 
-function getTitle(kind: StakeholderKind | null, value: string | null) {
-  if (!kind || !value) return "Timetable";
-
-  if (kind === "lecturer") {
-    const lecturer = timetableData.lecturers.find((item) => item.id === value);
-    return lecturer?.name ?? "Lecturer timetable";
-  }
-
-  if (kind === "cohort") {
-    const cohort = timetableData.cohorts.find((item) => item.id === value);
-    return cohort?.name ?? "Cohort timetable";
-  }
-
-  if (kind === "program") {
-    const program = timetableData.programs.find((item) => item.id === value);
-    return program?.name ?? "Program timetable";
-  }
-
-  return value;
-}
-
-// Maps the short day codes used in slot ids (e.g. "tue") to the actual
-// calendar date shown for that day in the current displayed week.
 const dayToDate: Record<string, string> = {
   mon: "2026-09-21",
   tue: "2026-09-22",
@@ -61,18 +56,17 @@ type BackgroundEvent = {
   backgroundColor: string;
 };
 
-// Turns a flat list of slot ids like ["tue-09", "tue-10", "fri-09", ...]
-// into merged FullCalendar background events, e.g. one block for
-// Tuesday 09:00-18:00 and one block for Friday 09:00-14:00, instead of
-// a separate one-hour event per slot.
-// TODO:: this is terrible code
 function buildUnavailableEvents(slotIds: string[]): BackgroundEvent[] {
   const hoursByDay: Record<string, number[]> = {};
 
   slotIds.forEach((slotId) => {
-    const [day, hourStr] = slotId.split("-");
-    const hour = parseInt(hourStr, 10);
-    if (!hoursByDay[day]) hoursByDay[day] = [];
+    const [day, hourString] = slotId.split("-");
+    const hour = parseInt(hourString, 10);
+
+    if (!hoursByDay[day]) {
+      hoursByDay[day] = [];
+    }
+
     hoursByDay[day].push(hour);
   });
 
@@ -80,30 +74,34 @@ function buildUnavailableEvents(slotIds: string[]): BackgroundEvent[] {
 
   Object.entries(hoursByDay).forEach(([day, hours]) => {
     const date = dayToDate[day];
-    if (!date) return;
+
+    if (!date || hours.length === 0) {
+      return;
+    }
 
     const sortedHours = [...hours].sort((a, b) => a - b);
 
     let blockStart = sortedHours[0];
-    let prevHour = sortedHours[0];
+    let previousHour = sortedHours[0];
 
-    for (let i = 1; i <= sortedHours.length; i++) {
-      const currentHour = sortedHours[i];
-      const isConsecutive = currentHour === prevHour + 1;
+    for (let index = 1; index <= sortedHours.length; index++) {
+      const currentHour = sortedHours[index];
+      const isConsecutive = currentHour === previousHour + 1;
 
       if (!isConsecutive) {
         events.push({
           id: `unavailable-${day}-${blockStart}`,
           title: "Unavailable",
           start: `${date}T${String(blockStart).padStart(2, "0")}:00:00`,
-          end: `${date}T${String(prevHour + 1).padStart(2, "0")}:00:00`,
+          end: `${date}T${String(previousHour + 1).padStart(2, "0")}:00:00`,
           display: "background",
           backgroundColor: "#dc2626",
         });
+
         blockStart = currentHour;
       }
 
-      prevHour = currentHour;
+      previousHour = currentHour;
     }
   });
 
@@ -112,13 +110,19 @@ function buildUnavailableEvents(slotIds: string[]): BackgroundEvent[] {
 
 export function StakeholderTimetablePage() {
   const [searchParams] = useSearchParams();
+  const { data, loading, error } = useTimetableData();
 
-  const kind =
+  const kind: StakeholderKind | null =
     (searchParams.get("type") as StakeholderKind | null) ??
-    (searchParams.get("lecturer") ? "lecturer" : null) ??
-    (searchParams.get("cohort") ? "cohort" : null) ??
-    (searchParams.get("program") ? "program" : null) ??
-    (searchParams.get("room") ? "room" : null);
+    (searchParams.get("lecturer")
+      ? "lecturer"
+      : searchParams.get("cohort")
+        ? "cohort"
+        : searchParams.get("program")
+          ? "program"
+          : searchParams.get("room")
+            ? "room"
+            : null);
 
   const value =
     searchParams.get("value") ??
@@ -127,25 +131,80 @@ export function StakeholderTimetablePage() {
     searchParams.get("program") ??
     searchParams.get("room");
 
-  const filteredSessions = getFilteredSessions(kind, value);
+  if (loading) {
+    return (
+      <section className="timetable-shell">
+        <p>Loading timetable…</p>
+      </section>
+    );
+  }
 
-  const events = mapSessionsToCalendarEvents(
-    filteredSessions,
-    timetableData.modules,
-    timetableData.lecturers,
-    timetableData.programs,
-    timetableData.cohorts
+  if (error || !data) {
+    return (
+      <section className="timetable-shell">
+        <Link to={-1 as unknown as string} className="back-link">
+          ← Back
+        </Link>
+
+        <p>Could not load timetable.</p>
+      </section>
+    );
+  }
+
+  const filteredSessions = getFilteredSessions(
+    data.sessions,
+    kind,
+    value,
   );
 
   const selectedLecturer =
     kind === "lecturer"
-      ? timetableData.lecturers.find((l) => l.id === value)
+      ? data.lecturers.find((lecturer) => lecturer.id === value)
       : undefined;
 
-  const unavailableSlotIds = lecturerUnavailableSlots(selectedLecturer);
-  const unavailableEvents = buildUnavailableEvents(unavailableSlotIds);
+  const selectedCohort =
+    kind === "cohort"
+      ? data.cohorts.find((cohort) => cohort.id === value)
+      : undefined;
 
-  const calendarEvents = [...events, ...unavailableEvents];
+  const selectedProgram =
+    kind === "program"
+      ? data.programs.find((program) => program.id === value)
+      : undefined;
+
+  const title =
+    kind === "lecturer"
+      ? selectedLecturer?.name ?? "Lecturer timetable"
+      : kind === "cohort"
+        ? selectedCohort?.name ?? "Cohort timetable"
+        : kind === "program"
+          ? selectedProgram?.name ?? "Program timetable"
+          : kind === "room"
+            ? value ?? "Room timetable"
+            : "Timetable";
+
+  const events = mapSessionsToCalendarEvents(
+    filteredSessions,
+    data.modules,
+    data.lecturers,
+    data.programs,
+    data.cohorts,
+  );
+
+  /*
+   * Only lecturer timetables show unavailable periods.
+   */
+  const unavailableEvents =
+    kind === "lecturer" && selectedLecturer
+      ? buildUnavailableEvents(
+          lecturerUnavailableSlots(selectedLecturer),
+        )
+      : [];
+
+  const calendarEvents = [
+    ...events,
+    ...unavailableEvents,
+  ];
 
   return (
     <section className="timetable-shell">
@@ -153,11 +212,25 @@ export function StakeholderTimetablePage() {
         ← Back
       </Link>
 
-      <h1 className="timetable-title">{getTitle(kind, value)}</h1>
+      <h1 className="timetable-title">{title}</h1>
 
       <p className="step-description">
-        Read-only timetable preview. Reschedule actions are disabled here.
+        {kind === "lecturer" && selectedLecturer
+          ? `Showing bookings for ${selectedLecturer.name} only.`
+          : kind === "cohort" && selectedCohort
+            ? `Showing bookings for ${selectedCohort.name} only.`
+            : kind === "program" && selectedProgram
+              ? `Showing bookings for the ${selectedProgram.name} program only.`
+              : kind === "room" && value
+                ? `Showing bookings for ${value} only.`
+                : "Read-only timetable preview."}
       </p>
+
+      {filteredSessions.length === 0 && (
+        <p className="step-description">
+          No bookings found for this stakeholder.
+        </p>
+      )}
 
       <div className="timetable-calendar">
         <FullCalendar
@@ -171,16 +244,23 @@ export function StakeholderTimetablePage() {
           height="auto"
           events={calendarEvents}
           eventContent={(eventInfo) => {
-            const session = eventInfo.event.extendedProps.session;
+            const session = eventInfo.event.extendedProps
+              .session as Session | undefined;
 
             if (!session) {
-              return null; // background event
+              return null;
             }
 
             return (
               <div className="timetable-event">
-                <div className="event-time">{eventInfo.timeText}</div>
-                <div className="event-title">{eventInfo.event.title}</div>
+                <div className="event-time">
+                  {eventInfo.timeText}
+                </div>
+
+                <div className="event-title">
+                  {eventInfo.event.title}
+                </div>
+
                 <div className="event-title">
                   ROOM: {session.room ?? "TBC"}
                 </div>

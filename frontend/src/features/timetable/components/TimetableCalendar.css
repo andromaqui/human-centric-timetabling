@@ -103,59 +103,185 @@
   background: white;
 }
 
+/* ---- Design tokens (hardcoded, matching the app's actual palette) ---- */
 .timetable-shell {
-  background: #faf7ff;
-  border: 1px solid #e9d5ff;
-  border-radius: 20px;
-  padding: 20px;
+  --tt-page: #f3f1fc;
+  --tt-card: #ffffff;
+  --tt-border: #e4e1f2;
+  --tt-border-strong: #cfc9ea;
+  --tt-text-primary: #1e1b33;
+  --tt-text-secondary: #6b6480;
+  --tt-text-muted: #9891ac;
+  --tt-accent: #2563eb;
+  --tt-accent-soft: #eaf1fd;
+
+  --tt-lecturer: #d8433a;
+  --tt-lecturer-text: #8c2a24;
+  --tt-room: #3679d8;
+  --tt-room-text: #1d4e8c;
+  --tt-cohort: #3e9b5c;
+  --tt-cohort-text: #256b3c;
+
+  background: var(--tt-page);
+  border: 1px solid var(--tt-border);
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.timetable-header {
+  padding-bottom: 16px;
+  margin-bottom: 4px;
+  border-bottom: 1.5px solid var(--tt-text-primary);
+}
+
+.timetable-eyebrow {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tt-text-muted);
 }
 
 .timetable-title {
-  margin: 0 0 16px;
-  color: #4c1d95;
+  margin: 0;
+  color: var(--tt-text-primary);
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.timetable-legend {
+  display: flex;
+  gap: 24px;
+  margin: 16px 0 12px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--tt-text-secondary);
 }
 
 .timetable-calendar .fc {
   font-family: Inter, system-ui, sans-serif;
+  --fc-border-color: var(--tt-border);
+  --fc-page-bg-color: var(--tt-card);
+  --fc-neutral-bg-color: var(--tt-card);
+  --fc-today-bg-color: #fbfaFE;
+  --fc-event-bg-color: var(--tt-card);
+  --fc-event-border-color: var(--tt-border);
+  --fc-event-text-color: var(--tt-text-primary);
+  --fc-button-bg-color: #ffffff;
+  --fc-button-border-color: var(--tt-border);
+  --fc-button-text-color: var(--tt-text-primary);
+  --fc-button-hover-bg-color: var(--tt-accent-soft);
+  --fc-button-hover-border-color: var(--tt-border-strong);
+  --fc-button-active-bg-color: var(--tt-accent);
+  --fc-button-active-border-color: var(--tt-accent);
+  --fc-small-font-size: 12px;
 }
 
 .timetable-calendar .fc-toolbar-title {
-  color: #4c1d95;
+  color: var(--tt-text-primary);
+  font-size: 18px;
+  font-weight: 700;
 }
 
 .timetable-calendar .fc-button {
-  background: #7c3aed;
-  border: none;
-  border-radius: 10px;
-}
-
-.timetable-calendar .fc-button:hover {
-  background: #6d28d9;
+  border-radius: 8px;
+  font-weight: 600;
+  box-shadow: none !important;
+  text-transform: capitalize;
 }
 
 .timetable-calendar .fc-col-header-cell {
-  background: #f3e8ff;
+  background: transparent;
+  padding-bottom: 4px;
 }
 
 .timetable-calendar .fc-col-header-cell-cushion {
-  color: #581c87;
+  color: var(--tt-text-primary);
+  font-weight: 600;
   text-decoration: none;
+  padding: 6px 4px;
 }
 
-.timetable-calendar .fc-timegrid-slot-label {
-  color: #6b21a8;
+.timetable-calendar .fc-day-today .fc-col-header-cell-cushion {
+  color: var(--tt-accent);
+}
+
+.timetable-calendar .fc-timegrid-slot-label-cushion {
+  color: var(--tt-text-muted);
+  font-size: 11px;
 }
 
 .timetable-calendar .fc-event {
-  background: #8b5cf6;
-  border: 1px solid #7c3aed;
-  border-radius: 12px;
-  padding: 4px;
+  border-radius: 10px;
+  padding: 2px;
+  box-shadow: 0 1px 2px rgba(30, 27, 51, 0.05);
 }
 
 .timetable-event {
   position: relative;
   height: 100%;
+  padding: 6px 8px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.timetable-event .event-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timetable-event.is-open {
+  outline: 2px solid var(--tt-accent, #2563eb);
+  outline-offset: -1px;
+}
+
+.event-popover {
+  position: fixed;
+  z-index: 1000;
+  background: white;
+  border: 1px solid var(--tt-border);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(30, 27, 51, 0.15);
+  padding: 10px 12px;
+  width: 220px;
+}
+
+.event-popover .event-title {
+  white-space: normal;
+  overflow: visible;
+}
+
+.popover-actions {
+  border-top: 1px solid var(--tt-border, #e4e1f2);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+
+.popover-reschedule-button {
+  display: block;
+  width: 100%;
+  text-align: center;
+  border: none;
+  border-radius: 8px;
+  background: var(--tt-accent, #2563eb);
+  color: white;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.popover-reschedule-button:hover {
+  background: #1d4ed8;
 }
 
 .event-menu {
@@ -167,7 +293,7 @@
 .event-menu-button {
   background: transparent;
   border: none;
-  color: white;
+  color: var(--tt-text-muted);
   cursor: pointer;
   font-size: 18px;
 }
@@ -178,8 +304,9 @@
   right: 0;
   top: 24px;
   background: white;
+  border: 1px solid var(--tt-border);
   border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(76, 29, 149, 0.25);
+  box-shadow: 0 10px 30px rgba(30, 27, 51, 0.12);
   padding: 6px;
   z-index: 20;
 }
@@ -191,21 +318,67 @@
 .event-menu-dropdown button {
   border: none;
   background: transparent;
-  color: #4c1d95;
+  color: var(--tt-text-primary);
   padding: 8px 12px;
   cursor: pointer;
   white-space: nowrap;
 }
 
 .event-time {
-  font-size: 13px;
-  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--tt-text-muted);
+  margin-bottom: 3px;
 }
 
 .event-title {
   font-weight: 600;
-  line-height: 1.35;
-  padding-right: 22px;
+  font-size: 13px;
+  line-height: 1.3;
+  padding-right: 18px;
+  color: var(--tt-text-primary);
+}
+
+.event-tags {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tag-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.tag-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tag-lecturer .tag-dot {
+  background: var(--tt-lecturer, #d8433a);
+}
+.tag-lecturer {
+  color: var(--tt-lecturer-text, #8c2a24);
+}
+
+.tag-room .tag-dot {
+  background: var(--tt-room, #3679d8);
+}
+.tag-room {
+  color: var(--tt-room-text, #1d4e8c);
+}
+
+.tag-cohort .tag-dot {
+  background: var(--tt-cohort, #3e9b5c);
+}
+.tag-cohort {
+  color: var(--tt-cohort-text, #256b3c);
 }
 
 .modal-backdrop {

@@ -1,4 +1,4 @@
-import type { Cohort, Lecturer, Module, Program, Session } from "../types"
+import type { Cohort, Lecturer, Module, Program, Room, Session } from "../types"
 const dayAbbrev = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
 export function sessionToSlotIds(session: Session): string[] {
@@ -37,11 +37,13 @@ export type TimetableData = {
   cohorts: Cohort[];
   modules: Module[];
   sessions: Session[];
+  rooms: Room[];
   requiredEquipment?: string[];
   requiredCapacity?: number;
 };
 
 export const timetableData: TimetableData = {
+  rooms: [],
   programs: [
     { id: "cs", code: "CS", name: "Computer Science" },
     { id: "ds", code: "DS", name: "Data Science" },

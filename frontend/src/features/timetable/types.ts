@@ -21,6 +21,13 @@ export interface Module {
   title: string;
 }
 
+export interface Room {
+  id: string;
+  name: string;
+  capacity?: number;
+  equipment?: string;
+}
+
 export interface Session {
   id: string;
   moduleId: string;

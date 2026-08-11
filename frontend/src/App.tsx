@@ -1,10 +1,4 @@
 import { NavLink, Route, Routes } from "react-router-dom";
-import {
-  CalendarDays,
-  ShieldCheck,
-  BookmarkCheck,
-  History,
-} from "lucide-react";
 import { SavedSolutionsPage } from "./features/timetable/pages/SavedSolutionsPage";
 import { TimetableCalendar } from "./features/timetable/components/TimetableCalendar";
 import { ConstraintsPage } from "./features/constraints/components/ConstraintsPage";
@@ -19,32 +13,26 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <NavLink to="/" className="topbar-brand">
-          <CalendarDays size={28} />
+          <span className="topbar-brand-mark" />
           <span>Timetable</span>
         </NavLink>
 
         <nav className="topbar-nav">
           <NavLink to="/" className="nav-button">
-            <CalendarDays size={18} />
             <span>Timetable</span>
           </NavLink>
 
           <NavLink to="/constraints" className="nav-button">
-            <ShieldCheck size={18} />
             <span>Constraints</span>
           </NavLink>
 
           <NavLink to="/saved-solutions" className="nav-button">
-          <BookmarkCheck size={18} />
-          <span>Candidate Solutions</span>
-        </NavLink>
+            <span>Candidate solutions</span>
+          </NavLink>
 
-
-
-         <NavLink to="/historical-impact" className="nav-button">
-          <History size={18} />
-          <span>Historical Stakeholder Impact</span>
-        </NavLink>
+          <NavLink to="/historical-impact" className="nav-button">
+            <span>Historical impact</span>
+          </NavLink>
         </nav>
       </header>
 

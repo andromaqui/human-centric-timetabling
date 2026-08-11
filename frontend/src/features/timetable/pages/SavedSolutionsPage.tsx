@@ -167,7 +167,6 @@ function CandidateRow({
           aria-label={`Discard candidate for ${solution.moduleCode}`}
         >
           <Trash2 size={17} aria-hidden="true" />
-          <span>Discard</span>
         </button>
 
         <Link
