@@ -20,16 +20,20 @@
 }
 
 .mini-timetable-link {
-  color: #7c3aed;
+  color: #3f4b8f;
   font-size: 12px;
   font-weight: 800;
   text-decoration: none;
   white-space: nowrap;
 }
 
+.mini-timetable-link:hover {
+  text-decoration: underline;
+}
+
 .mini-timetable-grid {
   display: grid;
-  grid-template-columns: 34px repeat(5, 1fr);
+  grid-template-columns: 42px repeat(5, 1fr);
   gap: 5px;
   padding: 14px;
   background: #faf7ff;
@@ -52,6 +56,7 @@
   align-items: center;
   justify-content: flex-end;
   padding-right: 4px;
+  white-space: nowrap;
 }
 
 .mini-cell {
@@ -65,13 +70,44 @@
   background: #e5e7eb;
 }
 
+.mini-cell.unavailable {
+  background: #fee2e2;
+  border-color: #fecaca;
+}
+
 .mini-cell.selected {
-  background: #7c3aed;
-  border-color: #7c3aed;
+  background: #3f4b8f;
+  border-color: #3f4b8f;
+}
+
+/* Collision states: requested (blue) slot that overlaps a red
+   "unavailable" or grey "busy" slot. Diagonal stripes keep both
+   signals visible instead of one silently winning. */
+.mini-cell.selected-unavailable {
+  background: repeating-linear-gradient(
+    45deg,
+    #3f4b8f 0px,
+    #3f4b8f 5px,
+    #fee2e2 5px,
+    #fee2e2 10px
+  );
+  border-color: #3f4b8f;
+}
+
+.mini-cell.selected-busy {
+  background: repeating-linear-gradient(
+    45deg,
+    #3f4b8f 0px,
+    #3f4b8f 5px,
+    #e5e7eb 5px,
+    #e5e7eb 10px
+  );
+  border-color: #3f4b8f;
 }
 
 .mini-timetable-legend {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 10px 14px 12px;
   color: #6b7280;
@@ -91,9 +127,12 @@
   border-radius: 3px;
 }
 
-.mini-cell.unavailable {
-  background: #fee2e2;
-  border-color: #fecaca;
+.legend-selected {
+  background: #3f4b8f;
+}
+
+.legend-busy {
+  background: #e5e7eb;
 }
 
 .legend-unavailable {
@@ -101,10 +140,22 @@
   border: 1px solid #fecaca;
 }
 
-.legend-selected {
-  background: #7c3aed;
+.legend-selected-unavailable {
+  background: repeating-linear-gradient(
+    45deg,
+    #3f4b8f 0px,
+    #3f4b8f 3px,
+    #fee2e2 3px,
+    #fee2e2 6px
+  );
 }
 
-.legend-busy {
-  background: #e5e7eb;
+.legend-selected-busy {
+  background: repeating-linear-gradient(
+    45deg,
+    #3f4b8f 0px,
+    #3f4b8f 3px,
+    #e5e7eb 3px,
+    #e5e7eb 6px
+  );
 }

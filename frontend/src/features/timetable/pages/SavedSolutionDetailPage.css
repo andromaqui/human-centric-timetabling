@@ -1277,6 +1277,35 @@
   white-space: nowrap;
 }
 
+
+/* Affected stakeholder → related class badges */
+
+.saved-detail-stakeholder-copy {
+  min-width: 0;
+}
+
+.saved-detail-stakeholder-class-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.saved-detail-stakeholder-class-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3559a8;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: normal;
+}
+
 @media (max-width: 720px) {
   .saved-detail-impact-note {
     grid-template-columns: auto 1fr;

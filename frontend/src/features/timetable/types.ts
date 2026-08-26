@@ -40,6 +40,49 @@ export interface Session {
   type: "lecture" | "tutorial" | "lab" | "seminar";
 }
 
+type ConflictViolation =
+  | {
+      type: "room_overlap";
+      room_id: string;
+      blocking_session_id: string;
+    }
+  | {
+      type: "lecturer_overlap";
+      lecturer_id: string;
+      blocking_session_id: string;
+    }
+  | {
+      type: "class_equipment";
+      session_id: string;
+      room_id: string;
+      missing_equipment: string[];
+    }
+  | {
+      type: "class_capacity";
+      session_id: string;
+      room_id: string;
+      required_capacity: number;
+      room_capacity: number;
+    }
+  | {
+      type: string;
+      [key: string]: unknown;
+    };
+
+type ConflictPreviewResponse = {
+  status: "ok" | "not_concrete" | "invalid";
+  reason: string | null;
+  violations: ConflictViolation[];
+  overlapping_sessions?: string[];
+};
+
+const [previewConflicts, setPreviewConflicts] = useState<
+  ConflictViolation[]
+>([]);
+
+const [previewConflictsLoading, setPreviewConflictsLoading] =
+  useState(false);
+
 export type Lecturer = {
   id: string;
   name: string;

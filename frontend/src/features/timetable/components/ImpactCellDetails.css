@@ -1,0 +1,94 @@
+.impact-cell-details {
+  min-width: 430px;
+  padding: 18px 20px;
+
+  background: #ffffff;
+  border: 1px solid #dfe5f2;
+  border-radius: 12px;
+
+  box-shadow: 0 10px 30px rgba(30, 35, 64, 0.12);
+
+  color: #1e2340;
+}
+
+
+/* Semester title */
+
+.impact-cell-details-title {
+  margin-bottom: 14px;
+
+  font-size: 16px;
+  font-weight: 700;
+  color: #1e2340;
+}
+
+
+/* Shared grid structure */
+
+.impact-cell-details-columns,
+.impact-cell-details-row {
+  display: grid;
+  align-items: center;
+  column-gap: 16px;
+}
+
+
+/* Lunch:
+   Day | Lunch received | Lost */
+
+.impact-cell-details-columns.lunch-break,
+.impact-cell-details-row.lunch-break {
+  grid-template-columns: 1fr 130px 80px;
+}
+
+
+/* Teaching:
+   Day | Teaching hours | Limit | Over */
+
+.impact-cell-details-columns.daily-hours,
+.impact-cell-details-row.daily-hours {
+  grid-template-columns: 1fr 120px 70px 70px;
+}
+
+
+/* Column headings */
+
+.impact-cell-details-columns {
+  padding: 8px 0;
+
+  border-bottom: 1px solid #edf0f6;
+
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7290;
+}
+
+
+/* Rows */
+
+.impact-cell-details-row {
+  padding: 12px 0;
+
+  border-bottom: 1px solid #edf0f6;
+
+  font-size: 13px;
+  color: #1e2340;
+}
+
+.impact-cell-details-row:last-child {
+  border-bottom: none;
+}
+
+.impact-cell-details-row strong {
+  font-weight: 600;
+  color: #1e2340;
+}
+
+
+/* Lost / over amount */
+
+.impact-cell-details-impact {
+  color: #b45309;
+  font-weight: 600;
+  white-space: nowrap;
+}

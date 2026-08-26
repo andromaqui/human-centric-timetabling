@@ -1,0 +1,127 @@
+.objective-groups {
+  display: grid;
+  gap: 28px;
+}
+
+.objective-group {
+  display: grid;
+  gap: 12px;
+}
+
+.objective-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.objective-group-heading h3 {
+  margin: 0;
+  color: #3f4b8f;
+  font-size: 15px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.objective-group-heading span {
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: #eef2fd;
+  color: #3f4b8f;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.objective-list {
+  display: grid;
+  gap: 10px;
+}
+
+.objective-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 220px) 48px;
+  align-items: center;
+  gap: 20px;
+  border: 1px solid #d7ddf5;
+  border-radius: 16px;
+  padding: 14px 18px;
+  background: white;
+}
+
+.objective-details {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.objective-label {
+  color: #1e2340;
+  font-weight: 650;
+}
+
+.objective-toggle {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #3f4b8f;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.objective-toggle input {
+  accent-color: #3f4b8f;
+  cursor: pointer;
+}
+
+.objective-slider {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  accent-color: #3f4b8f;
+  cursor: pointer;
+}
+
+.objective-weight {
+  text-align: right;
+  color: #3f4b8f;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.objective-row.objective-disabled {
+  background: #f9fafb;
+  opacity: 0.65;
+}
+
+.objective-row.objective-disabled .objective-label {
+  color: #6b7290;
+}
+
+.objective-slider:disabled {
+  cursor: not-allowed;
+}
+
+@media (max-width: 700px) {
+  .objective-row {
+    grid-template-columns: 1fr 48px;
+    grid-template-areas:
+      "details weight"
+      "slider slider";
+    gap: 12px;
+  }
+
+  .objective-details {
+    grid-area: details;
+  }
+
+  .objective-slider {
+    grid-area: slider;
+  }
+
+  .objective-weight {
+    grid-area: weight;
+    text-align: right;
+  }
+}

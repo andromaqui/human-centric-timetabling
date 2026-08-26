@@ -1,7 +1,8 @@
-from sqlalchemy import String, Integer, ForeignKey, DateTime, Table, Column
+from sqlalchemy import ForeignKey, Table, Column, String, Integer, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
 from .database import Base
+from datetime import datetime
+
 
 
 class Program(Base):
@@ -173,12 +174,31 @@ class ConstraintRelaxation(Base):
 class CandidateSolution(Base):
     __tablename__ = "candidate_solutions"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    request_id: Mapped[str] = mapped_column(String, nullable=False)
-    saved_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    module_code: Mapped[str] = mapped_column(String, nullable=False)
-    module_title: Mapped[str] = mapped_column(String, nullable=False)
-    request_type: Mapped[str] = mapped_column(String, nullable=False)
-    request_summary: Mapped[str] = mapped_column(String, nullable=False)
-    discarded: Mapped[bool] = mapped_column(default=False)
-    data: Mapped[str] = mapped_column(String, nullable=False)  # JSON string
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="saved")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Groups multiple candidate solutions that came from the same request
+    request_id = Column(String, nullable=False)
+    request_created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+    )
+
+    requested_session_id = Column(String, nullable=False)
+    requested_module_id = Column(String, nullable=True)
+    request_type = Column(String, nullable=False)
+
+    additional_change_count = Column(Integer, nullable=False, default=0)
+
+    request = Column(JSON, nullable=False)
+    additional_changes = Column(JSON, nullable=False, default=list)
+    stakeholder_impacts = Column(JSON, nullable=False, default=list)
+    affected_stakeholders = Column(JSON, nullable=False, default=list)
+    objectives = Column(JSON, nullable=True)
+    constraints = Column(JSON, nullable=False)
+    resulting_timetable = Column(JSON, nullable=False, default=list)
+    solve_settings = Column(JSON, nullable=True)
+    solver_metadata = Column(JSON, nullable=True)

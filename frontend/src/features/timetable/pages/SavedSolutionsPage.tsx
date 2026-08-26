@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight,
@@ -10,16 +10,11 @@ import {
 } from "lucide-react";
 
 import {
-  savedSolutions,
   type SavedRequestType,
   type SavedSolution,
 } from "../data/savedSolutionsData";
 
-import {
-  discardSolution,
-  getDiscardedSolutionIds,
-  getSavedSolutions,
-} from "../data/savedSolutionsStore";
+import { discardSolution } from "../data/savedSolutionsStore";
 
 import "./SavedSolutionsPage.css";
 
@@ -268,18 +263,45 @@ function SavedRequestCard({
 
 export function SavedSolutionsPage() {
   const [allSavedSolutions, setAllSavedSolutions] =
-    useState<SavedSolution[]>(() => {
-      const discardedIds = new Set(
-        getDiscardedSolutionIds(),
-      );
+    useState<SavedSolution[]>([]);
 
-      return [
-        ...getSavedSolutions(),
-        ...savedSolutions,
-      ].filter(
-        (solution) => !discardedIds.has(solution.id),
-      );
-    });
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function loadCandidateSolutions() {
+      try {
+        setIsLoading(true);
+        setLoadError(null);
+
+        const response = await fetch(
+          "http://localhost:8000/candidate-solutions/",
+        );
+
+        if (!response.ok) {
+          throw new Error(
+            `Failed to load candidate solutions (${response.status})`,
+          );
+        }
+
+        const data: SavedSolution[] = await response.json();
+
+        setAllSavedSolutions(data);
+      } catch (error) {
+        console.error("Failed to load candidate solutions:", error);
+
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Failed to load candidate solutions.",
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadCandidateSolutions();
+  }, []);
 
   function handleDiscardSolution(
     solution: SavedSolution,
@@ -330,6 +352,27 @@ export function SavedSolutionsPage() {
       "change-lecturer": [],
     } as Record<SavedRequestType, SavedRequestGroup[]>,
   );
+
+  if (isLoading) {
+    return (
+      <section className="saved-solutions-page">
+        <div className="saved-solutions-empty">
+          <h2>Loading candidate solutions...</h2>
+        </div>
+      </section>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <section className="saved-solutions-page">
+        <div className="saved-solutions-empty">
+          <h2>Could not load candidate solutions</h2>
+          <p>{loadError}</p>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="saved-solutions-page">

@@ -2,18 +2,51 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Calendar, Clock, MapPin, User, ExternalLink } from "lucide-react";
 import { MiniTimetablePreview } from "../components/MiniTimetablePreview";
-import { saveSolution } from "../data/savedSolutionsStore";
-import type { SavedSolution } from "../data/savedSolutionsData";
+import { ObjectivesPanel } from "../components/objectives/ObjectivesPanel";
+import { ConstraintsOverviewPanel } from "../components/constraints/ConstraintsOverviewPanel";
+import {
+  Step4Solution,
+  type TemporaryConstraintDeactivation,
+} from "../components/solution/Step4Solution";
 import {
   sessionToSlotIds,
-  lecturerUnavailableSlots,
   getBusySlots,
 } from "../data/timetableData";
 
 import { useTimetableData } from "../hooks/useTimetableData";
 import { api } from "../../../shared/api/client";
-import type { Cohort, Lecturer, Program, Session } from "../types";
+import type {
+  Cohort,
+  Lecturer,
+  Program,
+  Session,
+  Objective,
+  ObjectiveStakeholder,
+} from "../types";
 import "./ReschedulePage.css";
+
+function formatViolation(v: Violation): string {
+  switch (v.type) {
+    case "lecturer_overlap":
+      return `Lecturer is already teaching another class (${v.blocking_session_id})`;
+    case "room_overlap":
+      return `Room is already occupied by another class (${v.blocking_session_id})`;
+    case "lecturer_unavailable":
+      return `Lecturer is unavailable on ${v.day} at ${v.hour}:00`;
+    case "class_capacity":
+      return `Room capacity too small (needs ${v.required_capacity}, has ${v.room_capacity})`;
+    case "class_equipment":
+      return `Room missing equipment: ${(v.missing_equipment || []).join(", ")}`;
+    case "lecturer_daily_hours":
+      return `Lecturer would exceed daily hours limit (${v.total_hours}h > ${v.limit}h)`;
+    case "cohort_daily_hours":
+      return `Cohort would exceed daily hours limit (${v.total_hours}h > ${v.limit}h)`;
+    case "lecturer_lunch_break":
+      return `Lecturer would have no lunch break on ${v.day}`;
+    default:
+      return v.type;
+  }
+}
 
 type ConstraintDefinition = {
   id: string;
@@ -43,7 +76,7 @@ type RelatedConstraintRow = {
   relaxation: RelaxationOut | null;
 };
 
-// Read-only constraint overview used by Step 3.
+// Read-only constraint overview used by Step 2.
 // Unlike relatedConstraints above, this represents every ACTIVE constraint
 // instance in the system, grouped in the same hierarchy as ConstraintsPage.
 type OverviewLeaf = {
@@ -62,8 +95,6 @@ type OverviewEntityGroup = {
   leaves: OverviewLeaf[];
 };
 
-const OVERVIEW_STAKEHOLDERS = ["Lecturer", "Cohort", "Session", "Room"] as const;
-
 const DAY_LABELS: Record<string, string> = {
   mon: "Monday",
   tue: "Tuesday",
@@ -71,6 +102,46 @@ const DAY_LABELS: Record<string, string> = {
   thu: "Thursday",
   fri: "Friday",
 };
+
+function buildTimetableLocalStart(
+  referenceStart: string | Date,
+  day: string,
+  time: string,
+): string | null {
+  const dayIndex: Record<string, number> = {
+    Sunday: 0,
+    Monday: 1,
+    Tuesday: 2,
+    Wednesday: 3,
+    Thursday: 4,
+    Friday: 5,
+    Saturday: 6,
+  };
+
+  const requestedDayIndex = dayIndex[day];
+  if (requestedDayIndex === undefined) return null;
+
+  const currentStart = new Date(referenceStart);
+  const requestedDate = new Date(currentStart);
+
+  requestedDate.setDate(
+    currentStart.getDate() + (requestedDayIndex - currentStart.getDay()),
+  );
+
+  const [hours, minutes = 0] = time.split(":").map(Number);
+  requestedDate.setHours(hours, minutes, 0, 0);
+
+  const year = requestedDate.getFullYear();
+  const month = String(requestedDate.getMonth() + 1).padStart(2, "0");
+  const date = String(requestedDate.getDate()).padStart(2, "0");
+  const hour = String(requestedDate.getHours()).padStart(2, "0");
+  const minute = String(requestedDate.getMinutes()).padStart(2, "0");
+
+  // Important: the solver expects timetable wall-clock time.
+  // Do NOT use toISOString() here, because that converts the selected
+  // local time to UTC and can shift (for example) 12:00 to 10:00.
+  return `${year}-${month}-${date}T${hour}:${minute}:00`;
+}
 
 async function fetchRelaxation(
   instanceType: "session" | "lecturer" | "cohort" | "room",
@@ -93,7 +164,7 @@ function describeRelaxation(relaxation: RelaxationOut): string {
   return "Relaxed";
 }
 
-type WizardStep = 1 | 2 | 3 | 4 | 5;
+type WizardStep = 1 | 2 | 3 | 4;
 
 type SelectedEvent = {
   session: Session;
@@ -102,22 +173,78 @@ type SelectedEvent = {
   cohorts: Cohort[];
 };
 
-type ObjectiveStakeholder = "Lecturer" | "Cohort" | "Room" | "General";
-
-type Objective = {
-  id: string;
-  label: string;
-  stakeholder: ObjectiveStakeholder;
-  weight: number; // 1–100
-  enabled: boolean;
+type ApiLecturerUnavailability = {
+  id: number;
+  lecturer_id?: string;
+  day: string;
+  hour: number;
 };
 
-const objectiveStakeholders: ObjectiveStakeholder[] = [
-  "Lecturer",
-  "Cohort",
-  "Room",
-  "General",
-];
+type RescheduleRequest = {
+  session_id: string;
+  time_mode: "keep" | "specific" | "find";
+  requested_start: string | null;
+  room_mode: "keep" | "specific" | "find";
+  requested_room_id: string | null;
+  lecturer_mode: "keep" | "specific" | "find";
+  requested_lecturer_id: string | null;
+  temporarily_deactivated_constraints?: TemporaryConstraintDeactivation[];
+  max_additional_changes?: number | null;
+};
+
+type RescheduleSolution = {
+  start_slot: number;
+  day: string;
+  time: string;
+  room_id: string;
+  lecturer_id: string;
+};
+
+type Violation = {
+  type: string;
+  [key: string]: any; // allows lecturer_id, room_id, blocking_session_id, etc.
+};
+
+type Diagnostics = {
+  violations: Violation[];
+  overlapping_sessions: string[];
+};
+
+type AdditionalChange = {
+  session_id: string;
+
+  time_changed: boolean;
+  old_start_slot: number;
+  new_start_slot: number;
+  old_day: string;
+  old_time: string;
+  new_day: string;
+  new_time: string;
+
+  room_changed: boolean;
+  old_room_id: string;
+  new_room_id: string;
+};
+
+type RescheduleResponse =
+  | {
+      status: "feasible";
+      reason: null;
+      session_id: string;
+      solution?: RescheduleSolution; // keep if you still use it
+      start_slot?: number;
+      day?: string;
+      time?: string;
+      room_id?: string;
+      lecturer_id?: string;
+      additional_changes?: AdditionalChange[];
+    }
+  | {
+      status: "infeasible" | "invalid" | "success";
+      reason: string | null;
+      session_id?: string;
+      diagnostics?: Diagnostics | null;
+    };
 
 const initialObjectives: Objective[] = [
   {
@@ -196,19 +323,78 @@ export function ReschedulePage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const { data } = useTimetableData();
-  const solutionStatus = 2;
-  const [selectedConflictSlot, setSelectedConflictSlot] = useState("tue-09");
   const [step, setStep] = useState<WizardStep>(1);
-  const [expandedAlternative, setExpandedAlternative] = useState<string | null>(
-    null,
-  );
+  const [furthestStep, setFurthestStep] = useState<WizardStep>(1);
+
+  // Use for any *forward* navigation (Continue, skip-to-4). Going back
+  // (the Back button) should not affect how far the sidebar unlocks.
+  function goToStep(nextStep: WizardStep) {
+    setStep(nextStep);
+    setFurthestStep((current) => (nextStep > current ? nextStep : current));
+  }
+
   const [objectives, setObjectives] = useState<Objective[]>(initialObjectives);
-  const [showSchedulePreview, setShowSchedulePreview] = useState(false);
+  const [showSchedulePreview, setShowSchedulePreview] = useState(true);
   const [hiddenSchedules, setHiddenSchedules] = useState<string[]>([]);
   const [lecturerKnowledge, setLecturerKnowledge] = useState<
     "known" | "find" | null
   >(null);
   const [selectedLecturer, setSelectedLecturer] = useState<string | null>(null);
+
+  const [lecturerUnavailableSlotMap, setLecturerUnavailableSlotMap] =
+    useState<Record<string, string[]>>({});
+
+  useEffect(() => {
+    if (!data) {
+      setLecturerUnavailableSlotMap({});
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadLecturerUnavailability() {
+      const entries = await Promise.all(
+        data!.lecturers.map(async (lecturer) => {
+          try {
+            const rows = await api.get<ApiLecturerUnavailability[]>(
+              `/lecturers/${encodeURIComponent(lecturer.id)}/unavailability`,
+            );
+
+            const slotIds = rows.map((row) => {
+              const day = row.day.trim().slice(0, 3).toLowerCase();
+              const hour = String(row.hour).padStart(2, "0");
+
+              return `${day}-${hour}`;
+            });
+
+            return [lecturer.id, slotIds] as const;
+          } catch (error) {
+            console.error(
+              `Failed to load unavailability for ${lecturer.name}:`,
+              error,
+            );
+
+            return [lecturer.id, []] as const;
+          }
+        }),
+      );
+
+      if (!cancelled) {
+        setLecturerUnavailableSlotMap(Object.fromEntries(entries));
+      }
+    }
+
+    loadLecturerUnavailability();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data]);
+
+  function getLecturerUnavailableSlots(lecturerId?: string) {
+    if (!lecturerId) return [];
+    return lecturerUnavailableSlotMap[lecturerId] ?? [];
+  }
 
   const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
   const timeSlots = [
@@ -233,11 +419,94 @@ export function ReschedulePage() {
   const [timeKnowledge, setTimeKnowledge] = useState<TimeKnowledge>(null);
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const [rescheduleScope, setRescheduleScope] = useState<RescheduleScope>(null);
+  const [solverResult, setSolverResult] = useState<RescheduleResponse | null>(null);
+  const [solverLoading, setSolverLoading] = useState(false);
+  const [solverError, setSolverError] = useState<string | null>(null);
+  const [
+    appliedTemporaryDeactivations,
+    setAppliedTemporaryDeactivations,
+  ] = useState<TemporaryConstraintDeactivation[]>([]);
+
+  const [originalModes, setOriginalModes] = useState<{
+    time: "keep" | "specific" | "find";
+    room: "keep" | "specific" | "find";
+    lecturer: "keep" | "specific" | "find";
+  } | null>(null);
+
+  const [diagLecturer, setDiagLecturer] = useState<string | null>(null);
+  const [diagDay, setDiagDay] = useState<string | null>(null);
+  const [diagTime, setDiagTime] = useState<string | null>(null);
+  const [diagRoom, setDiagRoom] = useState<string | null>(null);
+
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagResult, setDiagResult] = useState<Diagnostics | null>(null);
+  const [diagError, setDiagError] = useState<string | null>(null);
+
+  const stepOneInvalid =
+    !changeType ||
+    !rescheduleScope ||
+    (
+      (changeType === "time" || changeType === "both") &&
+      !timeKnowledge
+    ) ||
+    (
+      (changeType === "time" || changeType === "both") &&
+      timeKnowledge === "known" &&
+      (!selectedDay || !selectedTime)
+    ) ||
+    (
+      (changeType === "room" || changeType === "both") &&
+      !selectedRoom
+    ) ||
+    (
+      changeType === "lecturer" &&
+      !lecturerKnowledge
+    ) ||
+    (
+      changeType === "lecturer" &&
+      lecturerKnowledge === "known" &&
+      !selectedLecturer
+    );
 
   const availableRooms = useMemo(
     () => data?.rooms.map((room) => room.name) ?? [],
     [data],
   );
+
+  // The three change modes as they currently stand from Step 1's selections.
+  // Extracted here (rather than only inline in buildRescheduleRequest) so the
+  // Priorities step can decide, before submission, whether anything is
+  // actually free for the solver to optimise over.
+  const currentModes = useMemo(() => {
+    let time: RescheduleRequest["time_mode"] = "keep";
+    let room: RescheduleRequest["room_mode"] = "keep";
+    let lecturer: RescheduleRequest["lecturer_mode"] = "keep";
+
+    if (changeType === "time" || changeType === "both") {
+      time = timeKnowledge === "known" ? "specific" : timeKnowledge === "find" ? "find" : "keep";
+    }
+
+    if (changeType === "room" || changeType === "both") {
+      room = selectedRoom ? "specific" : "find";
+    }
+
+    if (changeType === "lecturer") {
+      lecturer =
+        lecturerKnowledge === "known" ? "specific" : lecturerKnowledge === "find" ? "find" : "keep";
+    }
+
+    return { time, room, lecturer };
+  }, [changeType, timeKnowledge, selectedRoom, lecturerKnowledge]);
+
+  // Objectives matter whenever the solver has alternatives to compare:
+  // either a requested dimension is left as FIND, or the user allows
+  // collateral timetable changes. If everything is KEEP/SPECIFIC and the
+  // scope is "only", this is a pure yes/no feasibility check.
+  const objectivesApplicable =
+    currentModes.time === "find" ||
+    currentModes.room === "find" ||
+    currentModes.lecturer === "find" ||
+    rescheduleScope !== "only";
 
   const selectedEvent = useMemo<SelectedEvent | null>(() => {
     if (!data) return null;
@@ -261,13 +530,70 @@ export function ReschedulePage() {
     };
   }, [sessionId, data]);
 
-
   const selectedModule = useMemo(() => {
     if (!data || !selectedEvent) return undefined;
     return data.modules.find(
-      (module) => module.id === selectedEvent.session.moduleId,
+      (module) => module.id === selectedEvent!.session.moduleId,
     );
   }, [data, selectedEvent]);
+
+  function getSessionLabel(sessionId: string): string {
+    if (!data) return sessionId;
+    const session = data.sessions.find((s) => s.id === sessionId);
+    if (!session) return sessionId;
+    const mod = data.modules.find((m) => m.id === session.moduleId);
+    return mod ? `${mod.code} · ${mod.title}` : sessionId;
+  }
+
+  function getLecturerName(lecturerId: string): string {
+    return data?.lecturers.find((l) => l.id === lecturerId)?.name ?? lecturerId;
+  }
+
+  function getRoomName(roomId: string): string {
+    return data?.rooms.find((r) => r.id === roomId)?.name ?? roomId;
+  }
+
+  function getCohortName(cohortId: string): string {
+    return data?.cohorts.find((c) => c.id === cohortId)?.name ?? cohortId;
+  }
+
+  function formatDay(day: string): string {
+    return day.charAt(0).toUpperCase() + day.slice(1).toLowerCase();
+  }
+
+  function isRelaxableViolation(type: string): boolean {
+    const relaxable = new Set([
+      "class_capacity",
+      "class_equipment",
+      "lecturer_daily_hours",
+      "cohort_daily_hours",
+      "lecturer_lunch_break",
+    ]);
+    return relaxable.has(type);
+  }
+
+  function formatViolationNice(v: Violation): string {
+    switch (v.type) {
+      case "lecturer_overlap":
+        return `Lecturer ${getLecturerName(v.lecturer_id)} is already teaching ${getSessionLabel(v.blocking_session_id)}`;
+      case "room_overlap":
+        return `Room ${getRoomName(v.room_id)} is already used by ${getSessionLabel(v.blocking_session_id)}`;
+      case "lecturer_unavailable":
+        return `${getLecturerName(v.lecturer_id)} is unavailable on ${formatDay(v.day)} at ${v.hour}:00`;
+      case "class_capacity":
+        return `Room ${getRoomName(v.room_id)} is too small (needs ${v.required_capacity}, has ${v.room_capacity})`;
+      case "class_equipment":
+        return `Room ${getRoomName(v.room_id)} is missing: ${(v.missing_equipment || []).join(", ")}`;
+      case "lecturer_daily_hours":
+        return `${getLecturerName(v.lecturer_id)} would exceed daily limit on ${formatDay(v.day)} (${v.total_hours}h > ${v.limit}h)`;
+      case "cohort_daily_hours":
+        return `${getCohortName(v.cohort_id)} would exceed daily limit on ${formatDay(v.day)} (${v.total_hours}h > ${v.limit}h)`;
+      case "lecturer_lunch_break":
+        return `${getLecturerName(v.lecturer_id)} would have no lunch break on ${formatDay(v.day)}`;
+      default:
+        return v.type;
+    }
+  }
 
   const [constraintDefinitions, setConstraintDefinitions] = useState<
     ConstraintDefinition[]
@@ -392,8 +718,9 @@ export function ReschedulePage() {
   }, [selectedEvent, selectedModule, constraintDefinitions]);
 
   // ---------------------------------------------------------------------------
-  // Step 3: complete READ-ONLY overview of every active constraint instance.
+  // Step 2: complete READ-ONLY overview of every active constraint instance.
   // This intentionally has no modal, no edit action, and no relaxation controls.
+  // Rendered by <ConstraintsOverviewPanel />.
   // ---------------------------------------------------------------------------
   const [overviewEntitiesByConstraint, setOverviewEntitiesByConstraint] = useState<
     Record<string, OverviewEntityGroup[]>
@@ -618,15 +945,11 @@ export function ReschedulePage() {
     });
   }
 
-  const activeOverviewConstraintCount = constraintDefinitions.filter(
-    (constraint) => (overviewEntitiesByConstraint[constraint.id]?.length ?? 0) > 0,
-  ).length;
-
   const selectedEventDayTime = useMemo(() => {
     if (!selectedEvent) return null;
 
-    const start = new Date(selectedEvent.session.start);
-    const end = new Date(selectedEvent.session.end);
+    const start = new Date(selectedEvent!.session.start);
+    const end = new Date(selectedEvent!.session.end);
 
     const day = start.toLocaleDateString("en-US", { weekday: "long" });
     const startTime = start.toLocaleTimeString("en-US", {
@@ -661,93 +984,29 @@ export function ReschedulePage() {
     return sessionToSlotIds(selectedEvent.session);
   }, [selectedEvent]);
 
-  // TODO: HARDCODED PROTOTYPE DATA
-  // Replace conflicts and affected preview entities with solver/API results.
-  const conflictSlots = [
-    {
-      id: "tue-09",
-      label: "Tuesday 09:00–11:00",
-      slotIds: ["tue-09", "tue-10"],
-      conflicts: [
-        {
-          title: "Lecturer unavailable",
-          detail: "Dr. Maria Chen is unavailable on Tuesday morning.",
-        },
-        {
-          title: "Cohort workload",
-          detail:
-            "DS Year 1 already has 2 teaching hours on Tuesday. The maximum is 1 hour.",
-        },
-      ],
-    },
-    {
-      id: "wed-10",
-      label: "Wednesday 10:00–12:00",
-      slotIds: ["wed-10", "wed-11"],
-      affectedPreviews: {
-          lecturer: false,
-          cohortIds: ["ds-year-1"],
-          room: false,
-      },
-      conflicts: [
-        {
-          title: "Cohort conflict",
-          detail: "DS Year 1 already has DS110 at this time.",
-        },
-      ],
-    },
-  ];
+  // The slot every violation in Step 4's diagnostics is checked against.
+  // Case A: the concrete request's target time (falls back to the session's
+  // current time when only room/lecturer are changing).
+  const caseAProposedSlots = useMemo(
+    () => (requestedSlotIds.length ? requestedSlotIds : currentSlotIds),
+    [requestedSlotIds, currentSlotIds],
+  );
 
-  const [selectedLecturerConflict, setSelectedLecturerConflict] =
-    useState("lecturer-1");
-
-  const lecturerConflicts = [
-    {
-      id: "lecturer-1",
-      label: "Dr. Maria Chen",
-      conflicts: [
-        {
-          title: "Lecturer unavailable",
-          detail:
-            "Dr. Maria Chen is unavailable on Tuesdays and Friday mornings.",
-        },
-        {
-          title: "Lunch break",
-          detail:
-            "Assigning this class would violate Dr. Maria Chen's required lunch break.",
-        },
-      ],
-    },
-    {
-      id: "lecturer-2",
-      label: "Prof. James O'Connor",
-      conflicts: [
-        {
-          title: "Already teaching",
-          detail: "Prof. James O'Connor already has CS204 at this time.",
-        },
-      ],
-    },
-    {
-      id: "lecturer-3",
-      label: "Dr. Aisha Khan",
-      conflicts: [
-        {
-          title: "Workload limit",
-          detail:
-            "Dr. Aisha Khan has reached her maximum teaching hours for this day.",
-        },
-      ],
-    },
-  ];
-
-  const activeLecturerConflict =
-    lecturerConflicts.find((l) => l.id === selectedLecturerConflict) ??
-    lecturerConflicts[0];
-
-  const activeSlot =
-    conflictSlots.find((slot) => slot.id === selectedConflictSlot) ??
-    conflictSlots[0];
+  // Case B: whatever day/time the user is currently testing in the
+  // interactive "find" diagnosis dropdowns, falling back to Case A's slot
+  // until both day and time have been picked.
+  const caseBProposedSlots = useMemo(() => {
+    if (diagDay && diagTime) {
+      const dayCode = diagDay.slice(0, 3).toLowerCase();
+      const hour = parseInt(diagTime.split(":")[0], 10);
+      const duration = 2;
+      return Array.from(
+        { length: duration },
+        (_, i) => `${dayCode}-${String(hour + i).padStart(2, "0")}`,
+      );
+    }
+    return caseAProposedSlots;
+  }, [diagDay, diagTime, caseAProposedSlots]);
 
   function handleWeightChange(id: string, weight: number) {
     setObjectives((items) =>
@@ -767,7 +1026,7 @@ export function ReschedulePage() {
     if (!selectedEvent) return [];
     const { session, programs, cohorts } = selectedEvent;
 
-    // 👇 resolve requested lecturer vs current lecturer, same fallback rule as step 2
+    // resolve requested lecturer vs current lecturer, same fallback rule as step 2
     const lecturer = selectedLecturer
       ? data!.lecturers.find((l) => l.id === selectedLecturer)
       : selectedEvent.lecturer;
@@ -784,7 +1043,7 @@ export function ReschedulePage() {
           (s) => s.lecturerId === lecturer.id,
           session.id,
         ),
-        unavailableSlots: lecturerUnavailableSlots(lecturer),
+        unavailableSlots: getLecturerUnavailableSlots(lecturer.id),
         fullTimetableLink: `/timetable-preview?lecturer=${lecturer.id}`,
       });
     }
@@ -819,7 +1078,7 @@ export function ReschedulePage() {
       });
     });
 
-    // 👇 also resolve requested room vs current room, same idea
+    // resolve requested room vs current room, same idea
     const room = selectedRoom ?? session.room;
 
     if (room) {
@@ -838,15 +1097,116 @@ export function ReschedulePage() {
     }
 
     return items;
-  }, [selectedEvent, selectedLecturer, selectedRoom]);
+  }, [
+    selectedEvent,
+    selectedLecturer,
+    selectedRoom,
+    lecturerUnavailableSlotMap,
+  ]);
+
+  // ---- Interactive diagnosis helpers (must stay above any early return) ----
+  const needsInteractiveDiagnosis =
+    solverResult?.status === "infeasible" &&
+    originalModes !== null &&
+    (originalModes.time === "find" ||
+      originalModes.room === "find" ||
+      originalModes.lecturer === "find");
+
+  async function runInteractiveDiagnosis() {
+    if (!selectedEvent || !originalModes) return;
+
+    const lecturerId =
+      originalModes.lecturer === "find"
+        ? diagLecturer
+        : selectedLecturer ?? selectedEvent.lecturer?.id ?? null;
+
+    let roomId: string | null = null;
+    if (originalModes.room === "find") {
+      roomId = diagRoom;
+    } else if (selectedRoom) {
+      roomId = data?.rooms.find((r) => r.name === selectedRoom)?.id ?? null;
+    } else {
+      roomId =
+        data?.rooms.find((r) => r.name === selectedEvent.session.room)?.id ?? null;
+    }
+
+    const day =
+      originalModes.time === "find"
+        ? diagDay
+        : selectedDay ??
+          new Date(selectedEvent.session.start).toLocaleDateString("en-US", {
+            weekday: "long",
+          });
+
+    const time =
+      originalModes.time === "find"
+        ? diagTime
+        : selectedTime ??
+          new Date(selectedEvent.session.start).toLocaleTimeString("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          });
+
+    if (!lecturerId || !roomId || !day || !time) return;
+
+    setDiagLoading(true);
+    setDiagError(null);
+    setDiagResult(null);
+
+    try {
+      const requestedStart = buildTimetableLocalStart(
+        selectedEvent.session.start,
+        day,
+        time,
+      );
+
+      if (!requestedStart) {
+        setDiagError("Could not build a valid start time");
+        return;
+      }
+
+      const request = {
+        session_id: selectedEvent.session.id,
+        time_mode: "specific" as const,
+        requested_start: requestedStart,
+        room_mode: "specific" as const,
+        requested_room_id: roomId,
+        lecturer_mode: "specific" as const,
+        requested_lecturer_id: lecturerId,
+      };
+
+      const result = await api.post<{ diagnostics: Diagnostics }>(
+        "/solver/diagnose",
+        request,
+      );
+      setDiagResult(result.diagnostics);
+    } catch (err) {
+      setDiagError(err instanceof Error ? err.message : "Diagnosis failed");
+    } finally {
+      setDiagLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!needsInteractiveDiagnosis || !originalModes) return;
+
+    const lecturerReady =
+      originalModes.lecturer !== "find" || diagLecturer !== null;
+    const timeReady =
+      originalModes.time !== "find" || (diagDay !== null && diagTime !== null);
+    const roomReady = originalModes.room !== "find" || diagRoom !== null;
+
+    if (lecturerReady && timeReady && roomReady) {
+      runInteractiveDiagnosis();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [diagLecturer, diagDay, diagTime, diagRoom, needsInteractiveDiagnosis]);
+  // ---- end interactive diagnosis helpers ----
 
   if (!selectedEvent) {
     return (
       <section className="reschedule-page">
-        <Link to="/" className="back-link">
-          ← Back to timetable
-        </Link>
-
         <div className="reschedule-card">
           <h1>Session not found</h1>
           <p>We could not find the class you want to reschedule.</p>
@@ -855,189 +1215,887 @@ export function ReschedulePage() {
     );
   }
 
-  const statusTwoSlotIds = ["tue-10", "tue-11"];
-  const statusThreeRoom = "Room B204";
-  const statusThreeSlotIds = requestedSlotIds.length
-    ? requestedSlotIds
-    : currentSlotIds;
+  function buildRequestedStart(): string | null {
+    if (!selectedDay || !selectedTime) return null;
 
-  const inspectedLecturer =
-    data!.lecturers.find(
-      (lecturer) => lecturer.name === activeLecturerConflict.label,
-    ) ?? selectedEvent.lecturer ?? data!.lecturers[0];
+    return buildTimetableLocalStart(
+      selectedEvent!.session.start,
+      selectedDay,
+      selectedTime,
+    );
+  }
 
-  const lecturerPreviewSlotIds = requestedSlotIds.length
-    ? requestedSlotIds
-    : currentSlotIds;
+  function buildRescheduleRequest(): RescheduleRequest {
+    const timeMode = currentModes.time;
+    const roomMode = currentModes.room;
+    const lecturerMode = currentModes.lecturer;
 
+    const requestedStart = timeMode === "specific" ? buildRequestedStart() : null;
 
+    let requestedRoomId: string | null = null;
+    if (roomMode === "specific" && selectedRoom) {
+      const room = data!.rooms.find((item) => item.name === selectedRoom);
+      requestedRoomId = room?.id ?? null;
+    }
 
-  function handleSaveSolution() {
-    const selectedAlternative = expandedAlternative ?? "alternative-1";
-    const solutionId = `solution-${Date.now()}`;
+    let requestedLecturerId: string | null = null;
+    if (lecturerMode === "specific" && selectedLecturer) {
+      requestedLecturerId = selectedLecturer;
+    }
 
-    const alternatives = {
-      "alternative-1": {
-        day: "Wednesday",
-        displayDay: "Wednesday 23 September",
-        startTime: "14:00",
-        endTime: "16:00",
-        room: "Room B302",
-        additionalChanges: [],
-      },
-      "alternative-2": {
-        day: "Thursday",
-        displayDay: "Thursday 24 September",
-        startTime: "10:00",
-        endTime: "12:00",
-        room: "Room C105",
-        additionalChanges: [
-          {
-            moduleCode: "CS204",
+    return {
+      session_id: selectedEvent!.session.id,
+      time_mode: timeMode,
+      requested_start: requestedStart,
+      room_mode: roomMode,
+      requested_room_id: requestedRoomId,
+      lecturer_mode: lecturerMode,
+      requested_lecturer_id: requestedLecturerId,
+      max_additional_changes:
+        rescheduleScope === "up-to-2"
+          ? 2
+          : rescheduleScope === "up-to-3"
+            ? 3
+            : null,
+    };
+  }
+
+  async function runReschedule() {
+    setSolverLoading(true);
+    setSolverError(null);
+    setAppliedTemporaryDeactivations([]);
+    setSolverResult(null);
+    setDiagResult(null);
+    setDiagError(null);
+
+    try {
+      const request = buildRescheduleRequest();
+
+      // Remember which modes were used so we know whether interactive diagnosis is needed
+      setOriginalModes({
+        time: request.time_mode,
+        room: request.room_mode,
+        lecturer: request.lecturer_mode,
+      });
+
+      const result = await api.post<RescheduleResponse>(
+        "/solver/reschedule",
+        request,
+      );
+      setSolverResult(result);
+    } catch (error) {
+      console.error("Failed to reschedule session:", error);
+      setSolverError(
+        error instanceof Error ? error.message : "Failed to run the solver",
+      );
+    } finally {
+      setSolverLoading(false);
+    }
+  }
+
+  async function runRescheduleWithRelaxations(
+    temporarilyDeactivatedConstraints: TemporaryConstraintDeactivation[],
+  ) {
+    if (!selectedEvent) return;
+
+    setSolverLoading(true);
+    setSolverError(null);
+
+    try {
+      let request: RescheduleRequest;
+
+      if (needsInteractiveDiagnosis && originalModes) {
+        const lecturerId =
+          originalModes.lecturer === "find"
+            ? diagLecturer
+            : selectedLecturer ?? selectedEvent.lecturer?.id ?? null;
+
+        let roomId: string | null = null;
+
+        if (originalModes.room === "find") {
+          roomId = diagRoom;
+        } else if (selectedRoom) {
+          roomId =
+            data?.rooms.find((room) => room.name === selectedRoom)?.id ?? null;
+        } else {
+          roomId =
+            data?.rooms.find(
+              (room) => room.name === selectedEvent.session.room,
+            )?.id ?? null;
+        }
+
+        const day =
+          originalModes.time === "find"
+            ? diagDay
+            : selectedDay ??
+              new Date(selectedEvent.session.start).toLocaleDateString("en-US", {
+                weekday: "long",
+              });
+
+        const time =
+          originalModes.time === "find"
+            ? diagTime
+            : selectedTime ??
+              new Date(selectedEvent.session.start).toLocaleTimeString("en-US", {
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+              });
+
+        if (!lecturerId || !roomId || !day || !time) {
+          setSolverError("Could not build the concrete retry request.");
+          return;
+        }
+
+        const requestedStart = buildTimetableLocalStart(
+          selectedEvent.session.start,
+          day,
+          time,
+        );
+
+        if (!requestedStart) {
+          setSolverError("Could not build the retry date.");
+          return;
+        }
+
+        request = {
+          session_id: selectedEvent.session.id,
+          time_mode: "specific",
+          requested_start: requestedStart,
+          room_mode: "specific",
+          requested_room_id: roomId,
+          lecturer_mode: "specific",
+          requested_lecturer_id: lecturerId,
+          temporarily_deactivated_constraints:
+            temporarilyDeactivatedConstraints,
+        };
+      } else {
+        request = {
+          ...buildRescheduleRequest(),
+          temporarily_deactivated_constraints:
+            temporarilyDeactivatedConstraints,
+        };
+      }
+
+      console.log(
+        "Retrying with temporary constraint deactivations:",
+        request,
+      );
+
+      setOriginalModes({
+        time: request.time_mode,
+        room: request.room_mode,
+        lecturer: request.lecturer_mode,
+      });
+
+      const result = await api.post<RescheduleResponse>(
+        "/solver/reschedule",
+        request,
+      );
+
+      setSolverResult(result);
+
+      if (result.status === "feasible") {
+        setAppliedTemporaryDeactivations(
+          temporarilyDeactivatedConstraints,
+        );
+      }
+
+      setDiagResult(null);
+      setDiagError(null);
+    } catch (error) {
+      console.error(
+        "Failed to retry with relaxed constraints:",
+        error,
+      );
+
+      setSolverError(
+        error instanceof Error
+          ? error.message
+          : "Failed to retry the solver",
+      );
+    } finally {
+      setSolverLoading(false);
+    }
+  }
+
+  async function runRescheduleWithAdditionalChanges(
+    maxAdditionalChanges: number,
+  ) {
+    if (!selectedEvent) return;
+
+    setSolverLoading(true);
+    setSolverError(null);
+    setAppliedTemporaryDeactivations([]);
+
+    try {
+      let request: RescheduleRequest;
+
+      /*
+       * If Step 4 is diagnosing a request that originally used FIND,
+       * retry the concrete combination currently selected in the
+       * diagnosis controls. The user is authorising cascading changes
+       * to make THAT combination work.
+       */
+      if (needsInteractiveDiagnosis && originalModes) {
+        const lecturerId =
+          originalModes.lecturer === "find"
+            ? diagLecturer
+            : selectedLecturer ?? selectedEvent.lecturer?.id ?? null;
+
+        let roomId: string | null = null;
+
+        if (originalModes.room === "find") {
+          roomId = diagRoom;
+        } else if (selectedRoom) {
+          roomId =
+            data?.rooms.find((room) => room.name === selectedRoom)?.id ?? null;
+        } else {
+          roomId =
+            data?.rooms.find(
+              (room) => room.name === selectedEvent.session.room,
+            )?.id ?? null;
+        }
+
+        const day =
+          originalModes.time === "find"
+            ? diagDay
+            : selectedDay ??
+              new Date(selectedEvent.session.start).toLocaleDateString("en-US", {
+                weekday: "long",
+              });
+
+        const time =
+          originalModes.time === "find"
+            ? diagTime
+            : selectedTime ??
+              new Date(selectedEvent.session.start).toLocaleTimeString("en-US", {
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+              });
+
+        if (!lecturerId || !roomId || !day || !time) {
+          setSolverError("Could not build the concrete retry request.");
+          return;
+        }
+
+        const requestedStart = buildTimetableLocalStart(
+          selectedEvent.session.start,
+          day,
+          time,
+        );
+
+        if (!requestedStart) {
+          setSolverError("Could not build the retry date.");
+          return;
+        }
+
+        request = {
+          session_id: selectedEvent.session.id,
+          time_mode: "specific",
+          requested_start: requestedStart,
+          room_mode: "specific",
+          requested_room_id: roomId,
+          lecturer_mode: "specific",
+          requested_lecturer_id: lecturerId,
+          max_additional_changes: maxAdditionalChanges,
+        };
+      } else {
+        request = {
+          ...buildRescheduleRequest(),
+          max_additional_changes: maxAdditionalChanges,
+        };
+      }
+
+      console.log(
+        "Retrying with additional timetable changes:",
+        request,
+      );
+
+      setOriginalModes({
+        time: request.time_mode,
+        room: request.room_mode,
+        lecturer: request.lecturer_mode,
+      });
+
+      const result = await api.post<RescheduleResponse>(
+        "/solver/reschedule",
+        request,
+      );
+
+      setSolverResult(result);
+      setDiagResult(null);
+      setDiagError(null);
+    } catch (error) {
+      console.error(
+        "Failed to retry with additional timetable changes:",
+        error,
+      );
+
+      setSolverError(
+        error instanceof Error
+          ? error.message
+          : "Failed to retry the solver",
+      );
+    } finally {
+      setSolverLoading(false);
+    }
+  }
+
+  async function handleContinue() {
+    if (step === 1 && stepOneInvalid) {
+      return;
+    }
+
+    // Nothing free to optimise over — skip straight past the Priorities
+    // step, there's only one possible outcome for the solver to find.
+    if (step === 2 && !objectivesApplicable) {
+      await runReschedule();
+      goToStep(4);
+      return;
+    }
+
+    if (step === 3) {
+      await runReschedule();
+      goToStep(4);
+      return;
+    }
+
+    goToStep((step + 1) as WizardStep);
+  }
+
+  function buildConstraintSnapshot() {
+    const normalizeDay = (value: string | null | undefined) =>
+      value?.trim().slice(0, 3).toLowerCase() ?? null;
+
+    return constraintDefinitions.flatMap((definition) => {
+      const groups =
+        overviewEntitiesByConstraint[definition.id] ?? [];
+
+      return groups.flatMap((group) =>
+        group.leaves.map((leaf) => {
+          const temporarilyDeactivated =
+            appliedTemporaryDeactivations.some(
+              (item) =>
+                item.constraint_id === definition.id &&
+                item.instance_type === leaf.instanceType &&
+                (
+                  item.instance_id === group.key ||
+                  item.instance_id === leaf.instanceId
+                ) &&
+                (
+                  !item.day ||
+                  normalizeDay(item.day) ===
+                    normalizeDay(
+                      group.isDayScoped ? leaf.label : null,
+                    )
+                ),
+            );
+
+          return {
+            // Keep the old fields so existing backend/detail code remains compatible.
+            group:
+              definition.stakeholder === "Cohort"
+                ? "Cohorts"
+                : definition.stakeholder === "Session" ||
+                    definition.stakeholder === "Room"
+                  ? "Rooms / class"
+                  : definition.stakeholder,
+            rule: definition.name,
+            state: temporarilyDeactivated
+              ? "Temporarily deactivated"
+              : leaf.relaxation
+                ? describeRelaxation(leaf.relaxation)
+                : "Active",
+            relaxable:
+              definition.type === "relaxable",
+
+            // Rich snapshot fields used by the reusable hierarchy on the
+            // saved-solution page.
+            constraint_id: definition.id,
+            constraint_name: definition.name,
+            constraint_description: definition.description,
+            stakeholder: definition.stakeholder,
+            constraint_type: definition.type,
+
+            entity_id: group.key,
+            entity_label: group.label,
+
+            instance_id: leaf.instanceId,
+            instance_type: leaf.instanceType,
+
+            day: group.isDayScoped ? leaf.label : null,
+            info_text: leaf.infoText,
+            is_activated: !temporarilyDeactivated,
+          };
+        }),
+      );
+    });
+  }
+
+  async function handleSaveSolution() {
+    if (solverResult?.status !== "feasible") return;
+    if (!data || !selectedEvent) return;
+
+    setSolverError(null);
+
+    try {
+      const now = new Date();
+      const timestamp = now.getTime();
+
+      const solutionId = `solution-${timestamp}`;
+      const requestId = `reschedule-${selectedEvent.session.id}-${timestamp}`;
+      const solved = solverResult;
+
+      const dayIndex: Record<string, number> = {
+        sunday: 0,
+        monday: 1,
+        tuesday: 2,
+        wednesday: 3,
+        thursday: 4,
+        friday: 5,
+        saturday: 6,
+      };
+
+      function buildSolvedDates(
+        session: Session,
+        day: string,
+        time: string,
+      ) {
+        const currentStart = new Date(session.start);
+        const currentEnd = new Date(session.end);
+        const durationMs = currentEnd.getTime() - currentStart.getTime();
+
+        const nextStart = new Date(currentStart);
+        const targetDayIndex = dayIndex[day.toLowerCase()];
+
+        if (targetDayIndex !== undefined) {
+          nextStart.setDate(
+            currentStart.getDate() +
+              (targetDayIndex - currentStart.getDay()),
+          );
+        }
+
+        const [hours, minutes] = time.split(":").map(Number);
+        nextStart.setHours(hours, minutes ?? 0, 0, 0);
+
+        return {
+          start: nextStart,
+          end: new Date(nextStart.getTime() + durationMs),
+        };
+      }
+
+      function roomIdForSession(session: Session): string | null {
+        if (!session.room) return null;
+
+        return (
+          data.rooms.find((room) => room.name === session.room)?.id ??
+          session.room
+        );
+      }
+
+      function dayAndTimeForSession(session: Session) {
+        const start = new Date(session.start);
+
+        return {
+          day: start
+            .toLocaleDateString("en-US", { weekday: "long" })
+            .toLowerCase(),
+          time: start.toLocaleTimeString("en-GB", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }),
+        };
+      }
+
+      // Convert the solver's current flat additional-change output to the
+      // canonical format stored in candidate_solutions.
+      const additionalChanges = (solved.additional_changes ?? []).map(
+        (change) => {
+          const changedSession = data.sessions.find(
+            (session) => session.id === change.session_id,
+          );
+
+          const lecturerId =
+            changedSession?.lecturerId ?? null;
+
+          return {
+            session_id: change.session_id,
+            module_id: changedSession?.moduleId ?? null,
+
+            time_changed: change.time_changed,
+            room_changed: change.room_changed,
+            lecturer_changed: false,
+
             before: {
-              day: "Tuesday 22 September",
-              time: "13:00–15:00",
-              room: "Room53",
+              day: change.old_day,
+              time: change.old_time,
+              room_id: change.old_room_id,
+              lecturer_id: lecturerId,
             },
-            after: {
-              day: "Thursday 24 September",
-              time: "10:00–12:00",
-              room: "Room53",
-            },
-          },
-        ],
-      },
-      "alternative-3": {
-        day: "Friday",
-        displayDay: "Friday 25 September",
-        startTime: "09:00",
-        endTime: "11:00",
-        room: "Room A210",
-        additionalChanges: [
-          {
-            moduleCode: "CS151",
-            before: {
-              day: "Wednesday 23 September",
-              time: "10:00–12:00",
-              room: "Room B204",
-            },
-            after: {
-              day: "Friday 25 September",
-              time: "09:00–11:00",
-              room: "Room B204",
-            },
-          },
-          {
-            moduleCode: "DS110",
-            before: {
-              day: "Wednesday 23 September",
-              time: "10:00–12:00",
-              room: "Room B204",
-            },
-            after: {
-              day: "Wednesday 23 September",
-              time: "10:00–12:00",
-              room: "Room A210",
-            },
-          },
-        ],
-      },
-    } as const;
 
-    const chosen = alternatives[selectedAlternative];
+            after: {
+              day: change.new_day,
+              time: change.new_time,
+              room_id: change.new_room_id,
+              lecturer_id: lecturerId,
+            },
+          };
+        },
+      );
 
-    const requestType: SavedSolution["requestType"] =
-      changeType === "time"
-        ? "change-time"
-        : changeType === "room"
+      // Build a full snapshot of the timetable after the requested move and
+      // every cascading change.
+      const resultingTimetable = data.sessions.map((session) => ({
+        ...session,
+      }));
+
+      const mainSolvedDates = buildSolvedDates(
+        selectedEvent.session,
+        solved.day,
+        solved.time,
+      );
+
+      const solvedRoom = data.rooms.find(
+        (room) => room.id === solved.room_id,
+      );
+
+      const mainSessionIndex = resultingTimetable.findIndex(
+        (session) => session.id === selectedEvent.session.id,
+      );
+
+      if (mainSessionIndex !== -1) {
+        resultingTimetable[mainSessionIndex] = {
+          ...resultingTimetable[mainSessionIndex],
+          start: mainSolvedDates.start.toISOString(),
+          end: mainSolvedDates.end.toISOString(),
+          room: solvedRoom?.name ?? solved.room_id,
+          lecturerId: solved.lecturer_id,
+        };
+      }
+
+      for (const change of additionalChanges) {
+        const originalSession = data.sessions.find(
+          (session) => session.id === change.session_id,
+        );
+
+        if (!originalSession) continue;
+
+        const sessionIndex = resultingTimetable.findIndex(
+          (session) => session.id === change.session_id,
+        );
+
+        if (sessionIndex === -1) continue;
+
+        const changedDates = buildSolvedDates(
+          originalSession,
+          change.after.day,
+          change.after.time,
+        );
+
+        const changedRoom = data.rooms.find(
+          (room) => room.id === change.after.room_id,
+        );
+
+        resultingTimetable[sessionIndex] = {
+          ...resultingTimetable[sessionIndex],
+          start: changedDates.start.toISOString(),
+          end: changedDates.end.toISOString(),
+          room: changedRoom?.name ?? change.after.room_id,
+          lecturerId:
+            change.after.lecturer_id ??
+            originalSession.lecturerId,
+        };
+      }
+
+      const originalPlacement = dayAndTimeForSession(
+        selectedEvent.session,
+      );
+
+      const request = {
+        before: {
+          day: originalPlacement.day,
+          time: originalPlacement.time,
+          room_id: roomIdForSession(selectedEvent.session),
+          lecturer_id: selectedEvent.session.lecturerId ?? null,
+        },
+
+        after: {
+          day: solved.day,
+          time: solved.time,
+          room_id: solved.room_id,
+          lecturer_id: solved.lecturer_id,
+        },
+      };
+
+      const requestType =
+        changeType === "room"
           ? "change-room"
           : changeType === "lecturer"
             ? "change-lecturer"
-            : changeType === "both"
-              ? "change-time-and-room"
-              : "find-any-time";
+            : "reschedule-class";
 
-    const activeConstraints: SavedSolution["constraints"] =
-      relatedConstraints.map((row) => ({
-        group: row.group,
-        rule: row.constraintName,
-        state: row.relaxation ? describeRelaxation(row.relaxation) : "Active",
-        relaxable: row.relaxable,
-      }));
+      // ---------------------------------------------------------------------
+      // Affected stakeholders
+      //
+      // Include:
+      // - lecturers, cohorts and rooms for every moved class
+      // - both old and new lecturer/room when either changes
+      // - lecturers, cohorts and rooms involved in relaxed constraints
+      //
+      // The Map deduplicates stakeholders by type + id.
+      // ---------------------------------------------------------------------
 
-    const savedSolution: SavedSolution = {
-      id: solutionId,
-      savedAt: new Date().toISOString(),
-      moduleCode: selectedEvent.session.moduleCode,
-      moduleTitle: `${selectedEvent.session.moduleCode} saved solution`,
-      requestType,
-      requestSummary:
-        changeType === "room"
-          ? `Change the room for ${selectedEvent.session.moduleCode}.`
-          : changeType === "lecturer"
-            ? `Change the lecturer for ${selectedEvent.session.moduleCode}.`
-            : timeKnowledge === "find"
-              ? `Find a feasible new time for ${selectedEvent.session.moduleCode}.`
-              : `Move ${selectedEvent.session.moduleCode} to a new timetable slot.`,
-      original: {
-        day: selectedEvent.session.day,
-        time: `${selectedEvent.session.startTime}–${selectedEvent.session.endTime}`,
-        room: selectedEvent.session.room ?? "Room TBC",
-        lecturer: selectedEvent.lecturer?.name ?? "Unassigned",
-      },
-      result: {
-        day: chosen.displayDay,
-        time: `${chosen.startTime}–${chosen.endTime}`,
-        room: chosen.room,
-        lecturer: selectedEvent.lecturer?.name ?? "Unassigned",
-      },
-      additionalChanges: [...chosen.additionalChanges],
-      affectedStakeholders: [
-        ...(selectedEvent.lecturer
-          ? [
-              {
-                type: "lecturer" as const,
-                id: selectedEvent.lecturer.id,
-                label: selectedEvent.lecturer.name,
-              },
-            ]
-          : []),
-        ...selectedEvent.cohorts.map((cohort) => ({
-          type: "cohort" as const,
-          id: cohort.id,
-          label: cohort.name,
-        })),
-        {
-          type: "room" as const,
-          id: chosen.room,
-          label: chosen.room,
-        },
-      ],
-      constraints: activeConstraints,
-      objectives: objectives.map((objective) => ({ ...objective })),
-      resultingSessions: data!.sessions.map((session) =>
-        session.id === selectedEvent.session.id
-          ? {
-              ...session,
-              day: chosen.day,
-              startTime: chosen.startTime,
-              endTime: chosen.endTime,
-              room: chosen.room,
+      type AffectedStakeholder = {
+        type: "lecturer" | "cohort" | "room";
+        id: string;
+        label: string;
+      };
+
+      const affectedStakeholders = new Map<
+        string,
+        AffectedStakeholder
+      >();
+
+      function addAffectedStakeholder(
+        type: AffectedStakeholder["type"],
+        id: string | null | undefined,
+        label: string | null | undefined,
+      ) {
+        if (!id) return;
+
+        affectedStakeholders.set(
+          `${type}:${id}`,
+          {
+            type,
+            id,
+            label: label ?? id,
+          },
+        );
+      }
+
+      function addLecturerById(
+        lecturerId: string | null | undefined,
+      ) {
+        if (!lecturerId) return;
+
+        const lecturer = data.lecturers.find(
+          (item) => item.id === lecturerId,
+        );
+
+        addAffectedStakeholder(
+          "lecturer",
+          lecturerId,
+          lecturer?.name ?? lecturerId,
+        );
+      }
+
+      function addCohortById(
+        cohortId: string | null | undefined,
+      ) {
+        if (!cohortId) return;
+
+        const cohort = data.cohorts.find(
+          (item) => item.id === cohortId,
+        );
+
+        addAffectedStakeholder(
+          "cohort",
+          cohortId,
+          cohort?.name ?? cohortId,
+        );
+      }
+
+      function addRoomById(
+        roomId: string | null | undefined,
+      ) {
+        if (!roomId) return;
+
+        const room = data.rooms.find(
+          (item) => item.id === roomId,
+        );
+
+        addAffectedStakeholder(
+          "room",
+          roomId,
+          room?.name ?? roomId,
+        );
+      }
+
+      function addSessionStakeholders(
+        session: Session,
+      ) {
+        addLecturerById(session.lecturerId);
+
+        for (const cohortId of session.cohortIds) {
+          addCohortById(cohortId);
+        }
+
+        addRoomById(
+          roomIdForSession(session),
+        );
+      }
+
+      // Requested class: original stakeholders.
+      addSessionStakeholders(
+        selectedEvent.session,
+      );
+
+      // Requested class: solved lecturer and room may be different.
+      addLecturerById(
+        solved.lecturer_id,
+      );
+      addRoomById(
+        solved.room_id,
+      );
+
+      // Every additional moved class.
+      for (const change of additionalChanges) {
+        const movedSession = data.sessions.find(
+          (session) => session.id === change.session_id,
+        );
+
+        if (movedSession) {
+          // Cohorts and the original lecturer/room.
+          addSessionStakeholders(movedSession);
+        }
+
+        // Also capture new lecturer/room if those values changed.
+        addLecturerById(
+          change.before.lecturer_id,
+        );
+        addLecturerById(
+          change.after.lecturer_id,
+        );
+
+        addRoomById(
+          change.before.room_id,
+        );
+        addRoomById(
+          change.after.room_id,
+        );
+      }
+
+      // Stakeholders involved in temporarily relaxed constraints.
+      for (const relaxed of appliedTemporaryDeactivations) {
+        if (relaxed.instance_type === "lecturer") {
+          addLecturerById(relaxed.instance_id);
+          continue;
+        }
+
+        if (relaxed.instance_type === "cohort") {
+          addCohortById(relaxed.instance_id);
+          continue;
+        }
+
+        if (relaxed.instance_type === "room") {
+          addRoomById(relaxed.instance_id);
+          continue;
+        }
+
+        // Session-level constraints such as class capacity/equipment:
+        // include the lecturer, cohorts and room of that class.
+        if (relaxed.instance_type === "session") {
+          const relaxedSession = data.sessions.find(
+            (session) => session.id === relaxed.instance_id,
+          );
+
+          if (relaxedSession) {
+            addSessionStakeholders(relaxedSession);
+
+            // If this is the requested class, include its solved room/lecturer too.
+            if (
+              relaxedSession.id === selectedEvent.session.id
+            ) {
+              addLecturerById(solved.lecturer_id);
+              addRoomById(solved.room_id);
             }
-          : session,
-      ),
-    };
 
-    saveSolution(savedSolution);
-    navigate(`/saved-solutions/${solutionId}`);
+            const additionalChange = additionalChanges.find(
+              (change) =>
+                change.session_id === relaxedSession.id,
+            );
+
+            if (additionalChange) {
+              addLecturerById(
+                additionalChange.after.lecturer_id,
+              );
+              addRoomById(
+                additionalChange.after.room_id,
+              );
+            }
+          }
+        }
+      }
+
+      const affectedStakeholderList =
+        Array.from(affectedStakeholders.values());
+
+      const payload = {
+        id: solutionId,
+        name: null,
+        status: "saved",
+
+        request_id: requestId,
+        request_created_at: now.toISOString(),
+
+        requested_session_id: selectedEvent.session.id,
+        requested_module_id: selectedEvent.session.moduleId,
+        request_type: requestType,
+
+        request,
+
+        additional_changes: additionalChanges,
+        resulting_timetable: resultingTimetable,
+
+        affected_stakeholders: affectedStakeholderList,
+        stakeholder_impacts: [],
+
+        objectives: objectivesApplicable
+          ? objectives.map((objective) => ({
+              ...objective,
+            }))
+          : [],
+
+        constraints: buildConstraintSnapshot(),
+
+        solve_settings: {
+          time_mode: originalModes?.time ?? null,
+          room_mode: originalModes?.room ?? null,
+          lecturer_mode: originalModes?.lecturer ?? null,
+          reschedule_scope: rescheduleScope,
+          objectives_applicable: objectivesApplicable,
+        },
+
+        solver_metadata: {
+          additional_change_count: additionalChanges.length,
+        },
+      };
+
+      await api.post(
+        "/candidate-solutions/",
+        payload,
+      );
+
+      navigate(`/saved-solutions/${solutionId}`);
+    } catch (error) {
+      console.error(
+        "Failed to save candidate solution:",
+        error,
+      );
+
+      setSolverError(
+        error instanceof Error
+          ? error.message
+          : "Failed to save solution",
+      );
+    }
   }
 
   return (
     <section className="reschedule-page">
-      <Link to="/" className="back-link">
-        ← Back to timetable
-      </Link>
-
       <div className="reschedule-header">
         <h1>
           Reschedule class - {selectedModule?.code ?? "Unknown module"}
@@ -1051,7 +2109,7 @@ export function ReschedulePage() {
 
           <div className="meta-item">
             <MapPin size={18} />
-            <span>{selectedEvent.session.room ?? "Room TBC"}</span>
+            <span>{selectedEvent!.session.room ?? "Room TBC"}</span>
           </div>
 
           <div className="meta-item">
@@ -1061,27 +2119,50 @@ export function ReschedulePage() {
 
           <div className="meta-item">
             <User size={18} />
-            <span>{selectedEvent.lecturer?.name ?? "Unassigned"}</span>
+            <span>{selectedEvent!.lecturer?.name ?? "Unassigned"}</span>
           </div>
         </div>
       </div>
 
       <div className="reschedule-shell">
         <aside className="reschedule-sidebar">
-          {[1, 2, 3, 4, 5].map((item) => (
-            <button
-              key={item}
-              className={step === item ? "wizard-step active" : "wizard-step"}
-              onClick={() => setStep(item as WizardStep)}
-            >
-              <span>{item}</span>
-              {item === 1 && "Request"}
-              {item === 2 && "Impact"}
-              {item === 3 && "Related constraints"}
-              {item === 4 && "Priorities"}
-              {item === 5 && "Solution"}
-            </button>
-          ))}
+          {[1, 2, 3, 4].map((item) => {
+            const isPrioritiesStep = item === 3;
+            const notApplicable = isPrioritiesStep && !objectivesApplicable;
+            const notYetReached = item > furthestStep;
+            const disabled = notApplicable || notYetReached;
+
+            return (
+              <button
+                key={item}
+                className={
+                  step === item
+                    ? "wizard-step active"
+                    : disabled
+                      ? "wizard-step wizard-step-disabled"
+                      : "wizard-step"
+                }
+                onClick={() => {
+                  if (disabled) return;
+                  setStep(item as WizardStep);
+                }}
+                disabled={disabled}
+                title={
+                  notApplicable
+                    ? "Not applicable — nothing is free for this request to optimise over"
+                    : notYetReached
+                      ? "Complete the current step to unlock this one"
+                      : undefined
+                }
+              >
+                <span>{item}</span>
+                {item === 1 && "Request"}
+                {item === 2 && "Related constraints"}
+                {item === 3 && "Priorities"}
+                {item === 4 && "Solution"}
+              </button>
+            );
+          })}
         </aside>
 
         <main className="reschedule-card">
@@ -1122,7 +2203,6 @@ export function ReschedulePage() {
                     </button>
                   </div>
                 </div>
-              </div>
 
               {(changeType === "time" || changeType === "both") && (
                 <div className="impact-group change-section">
@@ -1265,595 +2345,134 @@ export function ReschedulePage() {
                   </div>
                 </div>
               )}
-            </>
-          )}
+              </div>
 
-          {step === 2 && (
-            <>
-              <h2>Impact</h2>
+              {!stepOneInvalid && (
+                <>
+                  <h2 className="impacted-stakeholders-heading">Impacted Stakeholders</h2>
 
-              <div className="impact-section">
-                <div className="impact-group">
-                  <div className="impact-label">Lecturer</div>
-                  <div className="impact-chips">
-                    <span className="impact-chip">
-                      {selectedLecturer
-                        ? data!.lecturers.find(
-                            (l) => l.id === selectedLecturer,
-                          )?.name
-                        : (selectedEvent.lecturer?.name ?? "Unassigned")}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="impact-group">
-                  <div className="impact-label">Programs</div>
-                  <div className="impact-chips">
-                    {selectedEvent.programs.map((program) => (
-                      <span key={program.id} className="impact-chip">
-                        {program.name}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="impact-group">
-                  <div className="impact-label">Cohorts</div>
-                  <div className="impact-chips">
-                    {selectedEvent.cohorts.map((cohort) => (
-                      <span key={cohort.id} className="impact-chip">
-                        {cohort.name}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="impact-group">
-                  <div className="impact-label">Rooms</div>
-                  <div className="impact-chips">
-                    <span className="impact-chip">
-                      {selectedRoom ?? selectedEvent.session.room ?? "Room TBC"}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="schedule-preview-block">
-                  <button
-                    type="button"
-                    className="schedule-preview-toggle"
-                    onClick={() => setShowSchedulePreview((value) => !value)}
-                  >
-                    {showSchedulePreview
-                      ? "Hide schedule preview ↑"
-                      : "Preview affected schedules ↓"}
-                  </button>
-
-                  {showSchedulePreview && (
-                    <div className="schedule-preview-panel">
-                      <div className="schedule-preview-controls">
-                        <span className="impact-label">Showing</span>
-
-                        <div className="impact-chips">
-                          {schedulePreviewItems.map((item) => {
-                            const isHidden = hiddenSchedules.includes(item.id);
-
-                            return (
-                              <button
-                                key={item.id}
-                                type="button"
-                                className={
-                                  isHidden
-                                    ? "preview-chip muted"
-                                    : "preview-chip"
-                                }
-                                onClick={() =>
-                                  setHiddenSchedules((current) =>
-                                    current.includes(item.id)
-                                      ? current.filter(
-                                          (value) => value !== item.id,
-                                        )
-                                      : [...current, item.id],
-                                  )
-                                }
-                              >
-                                {isHidden ? "○" : "✓"} {item.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="schedule-preview-strip">
-                        {schedulePreviewItems
-                          .filter((item) => !hiddenSchedules.includes(item.id))
-                          .map((item) => {
-                            const wasChanged =
-                              (item.type === "lecturer" &&
-                                !!selectedLecturer &&
-                                selectedLecturer !==
-                                  selectedEvent.lecturer?.id) ||
-                              (item.type === "room" &&
-                                !!selectedRoom &&
-                                selectedRoom !== selectedEvent.session.room);
-
-                            const slotsToShow = wasChanged
-                              ? requestedSlotIds
-                              : requestedSlotIds.length
-                                ? requestedSlotIds
-                                : currentSlotIds;
-
-                            return (
-                              <div key={item.id} className="mini-schedule-card">
-                                <MiniTimetablePreview
-                                  title={item.label}
-                                  busySlots={item.sessions}
-                                  selectedSlots={slotsToShow}
-                                  unavailableSlots={item.unavailableSlots ?? []}
-                                  fullTimetableLink={item.fullTimetableLink}
-                                />
-                              </div>
-                            );
-                          })}
+                  <div className="impact-stakeholders">
+                    <div className="impact-group">
+                      <div className="impact-label">Lecturer</div>
+                      <div className="impact-chips">
+                        <span className="impact-chip">
+                          {selectedLecturer
+                            ? data!.lecturers.find(
+                                (l) => l.id === selectedLecturer,
+                              )?.name
+                            : (selectedEvent!.lecturer?.name ?? "Unassigned")}
+                        </span>
                       </div>
                     </div>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
 
-          {step === 3 && (
-            <>
-              <h2>Active constraints overview</h2>
-
-              <p className="step-description">
-                Read-only overview of every active constraint currently configured
-                in the timetable. Expand a section to quickly inspect where each
-                rule applies.
-              </p>
-
-              <Link to="/constraints" className="review-constraints-link">
-                Review &amp; modify constraints
-                <ExternalLink size={16} />
-              </Link>
-
-              {overviewLoading && (
-                <p className="step-description">Loading active constraints…</p>
-              )}
-
-              {!overviewLoading && activeOverviewConstraintCount === 0 && (
-                <p className="step-description">
-                  No active constraints are currently configured.
-                </p>
-              )}
-
-              {!overviewLoading && activeOverviewConstraintCount > 0 && (
-                <div className="constraint-overview-list">
-                  {OVERVIEW_STAKEHOLDERS.map((stakeholder) => {
-                    const constraintsForStakeholder = constraintDefinitions.filter(
-                      (constraint) =>
-                        constraint.stakeholder === stakeholder &&
-                        (overviewEntitiesByConstraint[constraint.id]?.length ?? 0) > 0,
-                    );
-
-                    if (constraintsForStakeholder.length === 0) return null;
-
-                    const stakeholderOpen = openOverviewStakeholders.has(stakeholder);
-
-                    return (
-                      <section
-                        key={stakeholder}
-                        className="constraint-group-block constraint-overview-group"
-                      >
-                        <button
-                          type="button"
-                          className="constraint-overview-header"
-                          onClick={() => toggleOverviewStakeholder(stakeholder)}
-                          aria-expanded={stakeholderOpen}
-                        >
-                          <span>
-                            <strong>{stakeholder}</strong>
-                            <small>
-                              {constraintsForStakeholder.length}{" "}
-                              {constraintsForStakeholder.length === 1 ? "rule" : "rules"}
-                            </small>
+                    <div className="impact-group">
+                      <div className="impact-label">Programs</div>
+                      <div className="impact-chips">
+                        {selectedEvent.programs.map((program) => (
+                          <span key={program.id} className="impact-chip">
+                            {program.name}
                           </span>
-                          <span>{stakeholderOpen ? "−" : "+"}</span>
-                        </button>
-
-                        {stakeholderOpen && (
-                          <div className="constraint-overview-content">
-                            {constraintsForStakeholder.map((constraint) => {
-                              const groups =
-                                overviewEntitiesByConstraint[constraint.id] ?? [];
-                              const constraintOpen = openOverviewConstraints.has(
-                                constraint.id,
-                              );
-                              const instanceCount = groups.reduce(
-                                (total, group) => total + group.leaves.length,
-                                0,
-                              );
-
-                              return (
-                                <div
-                                  key={constraint.id}
-                                  className="constraint-overview-rule"
-                                >
-                                  <button
-                                    type="button"
-                                    className="constraint-overview-rule-header"
-                                    onClick={() =>
-                                      toggleOverviewConstraint(constraint.id)
-                                    }
-                                    aria-expanded={constraintOpen}
-                                  >
-                                    <span className="constraint-name">
-                                      {constraint.name}
-                                      <small>{instanceCount} active</small>
-                                    </span>
-
-                                    <span
-                                      className={
-                                        constraint.type === "relaxable"
-                                          ? "constraint-type-badge relaxable"
-                                          : "constraint-type-badge unrelaxable"
-                                      }
-                                    >
-                                      {constraint.type === "relaxable"
-                                        ? "Relaxable"
-                                        : "Unrelaxable"}
-                                    </span>
-                                  </button>
-
-                                  {constraintOpen && (
-                                    <div className="constraint-overview-entities">
-                                      {groups.map((group) => {
-                                        if (!group.isDayScoped) {
-                                          const leaf = group.leaves[0];
-                                          return (
-                                            <div
-                                              key={leaf.key}
-                                              className="constraints-table-row constraint-overview-leaf"
-                                            >
-                                              <span className="constraint-name">
-                                                {leaf.label}
-                                                {leaf.infoText && (
-                                                  <small>{leaf.infoText}</small>
-                                                )}
-                                              </span>
-                                              <span className="constraint-state">
-                                                {leaf.relaxation
-                                                  ? describeRelaxation(leaf.relaxation)
-                                                  : "Active"}
-                                              </span>
-                                            </div>
-                                          );
-                                        }
-
-                                        const entityKey = `${constraint.id}:${group.key}`;
-                                        const entityOpen =
-                                          openOverviewEntities.has(entityKey);
-
-                                        return (
-                                          <div
-                                            key={group.key}
-                                            className="constraint-overview-entity"
-                                          >
-                                            <button
-                                              type="button"
-                                              className="constraint-overview-entity-header"
-                                              onClick={() =>
-                                                toggleOverviewEntity(
-                                                  constraint.id,
-                                                  group.key,
-                                                )
-                                              }
-                                              aria-expanded={entityOpen}
-                                            >
-                                              <span>{group.label}</span>
-                                              <span>{entityOpen ? "−" : "+"}</span>
-                                            </button>
-
-                                            {entityOpen && (
-                                              <div className="constraint-overview-days">
-                                                {group.leaves.map((leaf) => (
-                                                  <div
-                                                    key={leaf.key}
-                                                    className="constraints-table-row constraint-overview-leaf"
-                                                  >
-                                                    <span className="constraint-name">
-                                                      {leaf.label}
-                                                    </span>
-                                                    <span className="constraint-state">
-                                                      {leaf.relaxation
-                                                        ? describeRelaxation(leaf.relaxation)
-                                                        : "Active"}
-                                                    </span>
-                                                  </div>
-                                                ))}
-                                              </div>
-                                            )}
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </section>
-                    );
-                  })}
-                </div>
-              )}
-            </>
-          )}
-
-          {step === 4 && (
-            <>
-              <h2>Priorities</h2>
-
-              <p className="step-description">
-                Set how much each objective matters to the solver, from 1 (low)
-                to 100 (high).
-              </p>
-
-              <div className="objective-groups">
-                {objectiveStakeholders.map((stakeholder) => {
-                  const stakeholderObjectives = objectives.filter(
-                    (objective) => objective.stakeholder === stakeholder,
-                  );
-
-                  return (
-                    <section key={stakeholder} className="objective-group">
-                      <div className="objective-group-heading">
-                        <h3>{stakeholder} objectives</h3>
-                        <span>{stakeholderObjectives.length}</span>
-                      </div>
-
-                      <div className="objective-list">
-                        {stakeholderObjectives.map((objective) => (
-                          <div
-                            key={objective.id}
-                            className={
-                              objective.enabled
-                                ? "objective-row"
-                                : "objective-row objective-disabled"
-                            }
-                          >
-                            <div className="objective-details">
-                              <span className="objective-label">
-                                {objective.label}
-                              </span>
-
-                              <label className="objective-toggle">
-                                <input
-                                  type="checkbox"
-                                  checked={objective.enabled}
-                                  onChange={() =>
-                                    handleObjectiveToggle(objective.id)
-                                  }
-                                />
-                                <span>
-                                  {objective.enabled ? "Enabled" : "Disabled"}
-                                </span>
-                              </label>
-                            </div>
-
-                            <input
-                              type="range"
-                              min={1}
-                              max={100}
-                              value={objective.weight}
-                              disabled={!objective.enabled}
-                              onChange={(event) =>
-                                handleWeightChange(
-                                  objective.id,
-                                  Number(event.target.value),
-                                )
-                              }
-                              className="objective-slider"
-                            />
-
-                            <span className="objective-weight">
-                              {objective.enabled ? objective.weight : "Off"}
-                            </span>
-                          </div>
                         ))}
                       </div>
-                    </section>
-                  );
-                })}
-              </div>
-            </>
-          )}
+                    </div>
 
-          {step === 5 && (
-            <>
-              {solutionStatus === 1 && (
-                <>
-                  <h3 className="impact-title">Solution alternatives</h3>
-
-                  <div className="solution-options">
-                    <div className="solution-card recommended">
-                      <div className="solution-card-header">
-                        <h4>Alternative 1</h4>
-                        <span className="solution-tag">Recommended</span>
-                      </div>
-
-                      <div className="solution-main">
-                        Wed 23 Sep, 14:00 – 16:00 · Room B302
-                      </div>
-
-                      <div className="solution-score warning">
-                        No changes required, low lecturer preferences score
+                    <div className="impact-group">
+                      <div className="impact-label">Cohorts</div>
+                      <div className="impact-chips">
+                        {selectedEvent.cohorts.map((cohort) => (
+                          <span key={cohort.id} className="impact-chip">
+                            {cohort.name}
+                          </span>
+                        ))}
                       </div>
                     </div>
 
-                    <div
-                      className={
-                        expandedAlternative === "alternative-2"
-                          ? "solution-card expanded"
-                          : "solution-card"
-                      }
-                      onClick={() =>
-                        setExpandedAlternative(
-                          expandedAlternative === "alternative-2"
-                            ? null
-                            : "alternative-2",
-                        )
-                      }
-                    >
-                      <div className="solution-card-header">
-                        <h4>Alternative 2</h4>
-                        <span className="solution-chevron">
-                          {expandedAlternative === "alternative-2" ? "▲" : "▼"}
+                    <div className="impact-group">
+                      <div className="impact-label">Rooms</div>
+                      <div className="impact-chips">
+                        <span className="impact-chip">
+                          {selectedRoom ?? selectedEvent!.session.room ?? "Room TBC"}
                         </span>
                       </div>
+                    </div>
 
-                      <div className="solution-main">
-                        Thu 24 Sep, 10:00 – 12:00 · Room C105
-                      </div>
+                    <div className="schedule-preview-block">
+                      <button
+                        type="button"
+                        className="schedule-preview-toggle"
+                        onClick={() => setShowSchedulePreview((value) => !value)}
+                      >
+                        {showSchedulePreview
+                          ? "Hide schedule preview ↑"
+                          : "Preview affected schedules ↓"}
+                      </button>
 
-                      <div className="solution-score warning">
-                        1 additional change required
-                      </div>
-
-                      <div className="solution-score good">
-                        Low walking distance
-                      </div>
-
-                      {expandedAlternative === "alternative-2" && (
-                        <div className="solution-changes">
-                          <h5>Changes</h5>
-
-                          <ul>
-                            <li>
-                              <strong>CS204</strong> moved from Tue 13:00–15:00
-                              <br />
-                              <span>→ Thu 10:00–12:00</span>
-                            </li>
-                          </ul>
-
-                          {/* TODO: HARDCODED PROTOTYPE DATA
-                              These affected entities are taken from session-2.
-                              Replace with solver/API output for each alternative. */}
-                          <div className="schedule-preview-controlsss">
-                           <h5> Affected Stakeholders </h5>
+                      {showSchedulePreview && (
+                        <div className="schedule-preview-panel">
+                          <div className="schedule-preview-controls">
+                            <span className="impact-label">Showing</span>
 
                             <div className="impact-chips">
-                              <Link
-                                to="/timetable-preview?lecturer=lecturer-2"
-                                className="preview-chip"
-                              >
-                                Lecturer: Prof. James O&apos;Connor ↗
-                              </Link>
+                              {schedulePreviewItems.map((item) => {
+                                const isHidden = hiddenSchedules.includes(item.id);
 
-                              <Link
-                                to="/timetable-preview?cohort=cs-y2"
-                                className="preview-chip"
-                              >
-                                Cohort: CS Year 2 ↗
-                              </Link>
-
-                              <Link
-                                to={`/timetable-preview?room=${encodeURIComponent(
-                                  "Room53",
-                                )}`}
-                                className="preview-chip"
-                              >
-                                Room: Room53 ↗
-                              </Link>
+                                return (
+                                  <button
+                                    key={item.id}
+                                    type="button"
+                                    className={
+                                      isHidden
+                                        ? "preview-chip muted"
+                                        : "preview-chip"
+                                    }
+                                    onClick={() =>
+                                      setHiddenSchedules((current) =>
+                                        current.includes(item.id)
+                                          ? current.filter(
+                                              (value) => value !== item.id,
+                                            )
+                                          : [...current, item.id],
+                                      )
+                                    }
+                                  >
+                                    {isHidden ? "○" : "✓"} {item.label}
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
-                        </div>
-                      )}
-                    </div>
 
-                    <div
-                      className={
-                        expandedAlternative === "alternative-3"
-                          ? "solution-card expanded"
-                          : "solution-card"
-                      }
-                      onClick={() =>
-                        setExpandedAlternative(
-                          expandedAlternative === "alternative-3"
-                            ? null
-                            : "alternative-3",
-                        )
-                      }
-                    >
-                      <div className="solution-card-header">
-                        <h4>Alternative 3</h4>
-                        <span className="solution-chevron">
-                          {expandedAlternative === "alternative-3" ? "▲" : "▼"}
-                        </span>
-                      </div>
+                          <div className="schedule-preview-strip">
+                            {schedulePreviewItems
+                              .filter((item) => !hiddenSchedules.includes(item.id))
+                              .map((item) => {
+                                const wasChanged =
+                                  (item.type === "lecturer" &&
+                                    !!selectedLecturer &&
+                                    selectedLecturer !==
+                                      selectedEvent.lecturer?.id) ||
+                                  (item.type === "room" &&
+                                    !!selectedRoom &&
+                                    selectedRoom !== selectedEvent.session.room);
 
-                      <div className="solution-main">
-                        Fri 25 Sep, 09:00 – 11:00 · Room A210
-                      </div>
+                                const slotsToShow = wasChanged
+                                  ? requestedSlotIds
+                                  : requestedSlotIds.length
+                                    ? requestedSlotIds
+                                    : currentSlotIds;
 
-                      <div className="solution-score bad">
-                        2 additional changes required
-                      </div>
-
-                      <div className="solution-score good">
-                        Low walking distance
-                      </div>
-
-                      {expandedAlternative === "alternative-3" && (
-                        <div className="solution-changes">
-                          <h5>Changes</h5>
-
-                          <ul>
-                            <li>
-                              <strong>CS151</strong> moved from Wed 10:00–12:00
-                              <br />
-                              <span>→ Fri 09:00–11:00</span>
-                            </li>
-
-                            <li>
-                              DS110 Room changed from B204
-                              <br />
-                              <span>→ A210</span>
-                            </li>
-                          </ul>
-
-                          {/* TODO: HARDCODED PROTOTYPE DATA
-                              DS110 stakeholder details come from session-3.
-                              CS151 is not currently present in timetableData,
-                              so add its lecturer/cohort links once that session exists. */}
-                          <div className="schedule-preview-controlsss">
-                            <h5>Affected Stakeholders</h5>
-
-                            <div className="impact-chips">
-                              <Link
-                                to="/timetable-preview?lecturer=lecturer-3"
-                                className="preview-chip"
-                              >
-                                Lecturer: Dr. Aisha Khan ↗
-                              </Link>
-
-                              <Link
-                                to="/timetable-preview?cohort=ds-y1"
-                                className="preview-chip"
-                              >
-                                Cohort: DS Year 1 ↗
-                              </Link>
-
-                              <Link
-                                to={`/timetable-preview?room=${encodeURIComponent(
-                                  "Room A210",
-                                )}`}
-                                className="preview-chip"
-                              >
-                                Room: Room A210 ↗
-                              </Link>
-                            </div>
+                                return (
+                                  <div key={item.id} className="mini-schedule-card">
+                                    <MiniTimetablePreview
+                                      title={item.label}
+                                      busySlots={item.sessions}
+                                      selectedSlots={slotsToShow}
+                                      unavailableSlots={item.unavailableSlots ?? []}
+                                      fullTimetableLink={item.fullTimetableLink}
+                                    />
+                                  </div>
+                                );
+                              })}
                           </div>
                         </div>
                       )}
@@ -1861,478 +2480,110 @@ export function ReschedulePage() {
                   </div>
                 </>
               )}
+                </>
+          )}
 
-              {solutionStatus === 2 && (
-                <div className="no-solution-card">
-                  <div className="no-solution-icon">!</div>
+          {step === 2 && (
+            <ConstraintsOverviewPanel
+              constraintDefinitions={constraintDefinitions}
+              overviewEntitiesByConstraint={overviewEntitiesByConstraint}
+              overviewLoading={overviewLoading}
+              openStakeholders={openOverviewStakeholders}
+              openConstraints={openOverviewConstraints}
+              openEntities={openOverviewEntities}
+              onToggleStakeholder={toggleOverviewStakeholder}
+              onToggleConstraint={toggleOverviewConstraint}
+              onToggleEntity={toggleOverviewEntity}
+            />
+          )}
 
-                  <div>
-                    <h4>Could not move CS101 to Tuesday 10:00–12:00</h4>
+          {step === 3 && objectivesApplicable && (
+            <ObjectivesPanel
+              objectives={objectives}
+              onWeightChange={handleWeightChange}
+              onToggle={handleObjectiveToggle}
+            />
+          )}
 
-                    <p>
-                      We checked the requested time, but found conflicts that
-                      prevent this class from being moved there.
-                    </p>
-
-                    <div className="conflict-details">
-                      <div>
-                        <span>Lecturer unavailable</span>
-                        <strong>
-                          Dr. Maria Chen is unavailable on Tuesday morning.
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>Cohort workload limit</span>
-                        <strong>
-                          DS Year 1 already has 2 teaching hours on Tuesday. The
-                          current maximum is 1 hour.
-                        </strong>
-                      </div>
-                    </div>
-
-                    <div className="conflict-visual-section">
-                      <h5>Visual conflict evidence</h5>
-                      <p>Compare the rejected time with the affected lecturer and cohort schedules.</p>
-                    </div>
-
-                    <div className="schedule-preview-block infeasibility-preview">
-                      <div className="schedule-preview-strip">
-                        {/* TODO: HARDCODED PROTOTYPE BEHAVIOUR
-                            For solution status 2, only Dr. Maria Chen
-                            and CS Year 1 are shown as visual conflict evidence. */}
-                        {selectedEvent.lecturer && (
-                          <div className="mini-schedule-card">
-                            <MiniTimetablePreview
-                              title={`Lecturer: ${selectedEvent.lecturer.name}`}
-                              busySlots={getBusySlots(
-                                data!.sessions,
-                                (session) =>
-                                  session.lecturerId ===
-                                  selectedEvent.lecturer?.id,
-                                selectedEvent.session.id,
-                              )}
-                              selectedSlots={statusTwoSlotIds}
-                              unavailableSlots={lecturerUnavailableSlots(
-                                selectedEvent.lecturer,
-                              )}
-                              fullTimetableLink={`/timetable-preview?lecturer=${selectedEvent.lecturer.id}`}
-                            />
-                          </div>
-                        )}
-
-                        {selectedEvent.cohorts
-                          .filter((cohort) => cohort.name === "CS Year 1")
-                          .map((cohort) => (
-                            <div key={cohort.id} className="mini-schedule-card">
-                              <MiniTimetablePreview
-                                title={`Cohort: ${cohort.name}`}
-                                busySlots={getBusySlots(
-                                  data!.sessions,
-                                  (session) =>
-                                    session.cohortIds.includes(cohort.id),
-                                  selectedEvent.session.id,
-                                )}
-                                selectedSlots={statusTwoSlotIds}
-                                unavailableSlots={[]}
-                                fullTimetableLink={`/timetable-preview?cohort=${cohort.id}`}
-                              />
-                            </div>
-                          ))}
-                      </div>
-                    </div>
-
-                    <div className="constraint-source">
-                      <span>Responsible constraints</span>
-                      <strong>
-                        Lecturer availability · Cohort teaching hours
-                      </strong>
-                      <p>
-                        These conflicts are caused by the currently active
-                        constraints. If appropriate, you can{" "}
-                        <Link to="/constraints">
-                          review or modify the active constraints
-                        </Link>{" "}
-                        and then try again.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {solutionStatus === 3 && (
-                <div className="no-solution-card">
-                  <div className="no-solution-icon">!</div>
-
-                  <div>
-                    <h4>Could not move CS101 to Room B204</h4>
-
-                    <p>
-                      We checked possible times for this room, but could not
-                      find a slot where the class can be moved without
-                      conflicts.
-                    </p>
-
-                    <div className="conflict-details">
-                      <div>
-                        <span>Room availability</span>
-                        <strong>
-                          Room B204 is not available for any suitable slot for
-                          this class.
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>Missing equipment</span>
-                        <strong>
-                          CS101 requires a Linux lab and projector, but Room
-                          B204 does not provide all required equipment.
-                        </strong>
-                      </div>
-                    </div>
-
-                    <div className="conflict-visual-section">
-                      <h5>Visual conflict evidence</h5>
-                      <p>See where the rejected room is already occupied.</p>
-                    </div>
-
-                    <div className="schedule-preview-block infeasibility-preview">
-                      <div className="schedule-preview-strip">
-                        <div className="mini-schedule-card">
-                          <MiniTimetablePreview
-                            title={`Room: ${statusThreeRoom}`}
-                            busySlots={getBusySlots(
-                              data!.sessions,
-                              (session) => session.room === statusThreeRoom,
-                              selectedEvent.session.id,
-                            )}
-                            selectedSlots={statusThreeSlotIds}
-                            unavailableSlots={[]}
-                            fullTimetableLink={`/timetable-preview?room=${encodeURIComponent(
-                              statusThreeRoom,
-                            )}`}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="constraint-source">
-                      <span>Related constraints</span>
-                      <strong>Room booking · Room equipment</strong>
-
-                      <p>
-                        These conflicts are caused by the currently active
-                        constraints. If appropriate, you can{" "}
-                        <Link to="/constraints">
-                          review or modify the active constraints
-                        </Link>{" "}
-                        and then try again.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {solutionStatus === 4 && (
-                <div className="no-solution-card">
-                  <div className="no-solution-icon">!</div>
-
-                  <div>
-                    <h4>No feasible time found for CS101</h4>
-
-                    <p>
-                      We checked possible time slots, but every candidate slot
-                      has at least one conflict with the currently active
-                      constraints.
-                    </p>
-
-                    <label className="conflict-slot-picker">
-                      <span>Inspect candidate slot</span>
-
-                      <select
-                        value={selectedConflictSlot}
-                        onChange={(event) =>
-                          setSelectedConflictSlot(event.target.value)
-                        }
-                      >
-                        {conflictSlots.map((slot) => (
-                          <option key={slot.id} value={slot.id}>
-                            {slot.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <div className="conflict-details">
-                      {activeSlot.conflicts.map((conflict) => (
-                        <div key={conflict.title}>
-                          <span>{conflict.title}</span>
-                          <strong>{conflict.detail}</strong>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="conflict-visual-section">
-                      <h5>Visual conflict evidence</h5>
-                      <p>The previews update when you inspect another candidate slot.</p>
-                    </div>
-
-                    <div className="schedule-preview-block infeasibility-preview">
-                      <div className="schedule-preview-strip">
-                        {selectedConflictSlot === "wed-10" ? (
-                          // TODO: HARDCODED PROTOTYPE BEHAVIOUR
-                          // For Wednesday 10:00–12:00, the only conflict is DS Year 1,
-                          // so only that cohort timetable is shown.
-                          selectedEvent.cohorts
-                            .filter((cohort) => cohort.name === "DS Year 1")
-                            .map((cohort) => (
-                              <div key={cohort.id} className="mini-schedule-card">
-                                <MiniTimetablePreview
-                                  title={`Cohort: ${cohort.name}`}
-                                  busySlots={getBusySlots(
-                                    data!.sessions,
-                                    (session) =>
-                                      session.cohortIds.includes(cohort.id),
-                                    selectedEvent.session.id,
-                                  )}
-                                  selectedSlots={activeSlot.slotIds}
-                                  unavailableSlots={[]}
-                                  fullTimetableLink={`/timetable-preview?cohort=${cohort.id}`}
-                                />
-                              </div>
-                            ))
-                        ) : selectedConflictSlot === "tue-09" ? (
-                          <>
-                            {/* TODO: HARDCODED PROTOTYPE BEHAVIOUR
-                                For Tuesday 09:00–11:00, only Dr. Maria Chen
-                                and DS Year 1 are involved in the conflict. */}
-                            {selectedEvent.lecturer?.name === "Dr. Maria Chen" && (
-                              <div className="mini-schedule-card">
-                                <MiniTimetablePreview
-                                  title={`Lecturer: ${selectedEvent.lecturer.name}`}
-                                  busySlots={getBusySlots(
-                                    data!.sessions,
-                                    (session) =>
-                                      session.lecturerId ===
-                                      selectedEvent.lecturer?.id,
-                                    selectedEvent.session.id,
-                                  )}
-                                  selectedSlots={activeSlot.slotIds}
-                                  unavailableSlots={lecturerUnavailableSlots(
-                                    selectedEvent.lecturer,
-                                  )}
-                                  fullTimetableLink={`/timetable-preview?lecturer=${selectedEvent.lecturer.id}`}
-                                />
-                              </div>
-                            )}
-
-                            {selectedEvent.cohorts
-                              .filter((cohort) => cohort.name === "DS Year 1")
-                              .map((cohort) => (
-                                <div key={cohort.id} className="mini-schedule-card">
-                                  <MiniTimetablePreview
-                                    title={`Cohort: ${cohort.name}`}
-                                    busySlots={getBusySlots(
-                                      data!.sessions,
-                                      (session) =>
-                                        session.cohortIds.includes(cohort.id),
-                                      selectedEvent.session.id,
-                                    )}
-                                    selectedSlots={activeSlot.slotIds}
-                                    unavailableSlots={[]}
-                                    fullTimetableLink={`/timetable-preview?cohort=${cohort.id}`}
-                                  />
-                                </div>
-                              ))}
-                          </>
-                        ) : (
-                          <>
-                            {selectedEvent.lecturer && (
-                              <div className="mini-schedule-card">
-                                <MiniTimetablePreview
-                                  title={`Lecturer: ${selectedEvent.lecturer.name}`}
-                                  busySlots={getBusySlots(
-                                    data!.sessions,
-                                    (session) =>
-                                      session.lecturerId ===
-                                      selectedEvent.lecturer?.id,
-                                    selectedEvent.session.id,
-                                  )}
-                                  selectedSlots={activeSlot.slotIds}
-                                  unavailableSlots={lecturerUnavailableSlots(
-                                    selectedEvent.lecturer,
-                                  )}
-                                  fullTimetableLink={`/timetable-preview?lecturer=${selectedEvent.lecturer.id}`}
-                                />
-                              </div>
-                            )}
-
-                            {selectedEvent.cohorts.map((cohort) => (
-                              <div key={cohort.id} className="mini-schedule-card">
-                                <MiniTimetablePreview
-                                  title={`Cohort: ${cohort.name}`}
-                                  busySlots={getBusySlots(
-                                    data!.sessions,
-                                    (session) =>
-                                      session.cohortIds.includes(cohort.id),
-                                    selectedEvent.session.id,
-                                  )}
-                                  selectedSlots={activeSlot.slotIds}
-                                  unavailableSlots={[]}
-                                  fullTimetableLink={`/timetable-preview?cohort=${cohort.id}`}
-                                />
-                              </div>
-                            ))}
-
-                            <div className="mini-schedule-card">
-                              <MiniTimetablePreview
-                                title={`Room: ${selectedRoom ?? selectedEvent.session.room ?? "Room TBC"}`}
-                                busySlots={getBusySlots(
-                                  data!.sessions,
-                                  (session) =>
-                                    session.room ===
-                                    (selectedRoom ?? selectedEvent.session.room),
-                                  selectedEvent.session.id,
-                                )}
-                                selectedSlots={activeSlot.slotIds}
-                                unavailableSlots={[]}
-                                fullTimetableLink={`/timetable-preview?room=${encodeURIComponent(
-                                  selectedRoom ?? selectedEvent.session.room ?? "",
-                                )}`}
-                              />
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="constraint-source">
-                      <span>Related constraints</span>
-                      <strong>
-                        Lecturer availability · Cohort teaching hours · Room
-                        booking
-                      </strong>
-
-                      <p>
-                        These conflicts are caused by the currently active
-                        constraints. If appropriate, you can{" "}
-                        <Link to="/constraints">
-                          review or modify the active constraints
-                        </Link>{" "}
-                        and then try again.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {solutionStatus === 5 && (
-                <div className="no-solution-card">
-                  <div className="no-solution-icon">!</div>
-
-                  <div>
-                    <h4>No available lecturer found for CS101</h4>
-
-                    <p>
-                      We checked every possible lecturer, but each one has at
-                      least one conflict with the currently active constraints.
-                    </p>
-
-                    <label className="conflict-slot-picker">
-                      <span>Inspect candidate lecturer</span>
-
-                      <select
-                        value={selectedLecturerConflict}
-                        onChange={(event) =>
-                          setSelectedLecturerConflict(event.target.value)
-                        }
-                      >
-                        {lecturerConflicts.map((lecturer) => (
-                          <option key={lecturer.id} value={lecturer.id}>
-                            {lecturer.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <div className="conflict-details">
-                      {activeLecturerConflict.conflicts.map((conflict) => (
-                        <div key={conflict.title}>
-                          <span>{conflict.title}</span>
-                          <strong>{conflict.detail}</strong>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="conflict-visual-section">
-                      <h5>Visual conflict evidence</h5>
-                      <p>
-                        The highlighted slots show the requested or current class
-                        time against this lecturer&apos;s timetable and unavailable periods.
-                      </p>
-                    </div>
-
-                    {inspectedLecturer && (
-                      <div className="schedule-preview-block infeasibility-preview">
-                        <div className="schedule-preview-strip">
-                          <div className="mini-schedule-card">
-                            <MiniTimetablePreview
-                              title={`Lecturer: ${inspectedLecturer.name}`}
-                              busySlots={getBusySlots(
-                                data!.sessions,
-                                (session) =>
-                                  session.lecturerId === inspectedLecturer.id,
-                                selectedEvent.session.id,
-                              )}
-                              selectedSlots={lecturerPreviewSlotIds}
-                              unavailableSlots={lecturerUnavailableSlots(
-                                inspectedLecturer,
-                              )}
-                              fullTimetableLink={`/timetable-preview?lecturer=${inspectedLecturer.id}`}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="constraint-source">
-                      <span>Related constraints</span>
-                      <strong>
-                        Lecturer availability · Lunch break · Workload limits
-                      </strong>
-
-                      <p>
-                        These conflicts are caused by the currently active
-                        constraints. If appropriate, you can{" "}
-                        <Link to="/constraints">
-                          review or modify the active constraints
-                        </Link>{" "}
-                        and then try again.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
+          {step === 3 && !objectivesApplicable && (
+            <>
+              <h2>Priorities</h2>
+              <p className="step-description">
+                This request fully specifies the permitted outcome and allows no
+                additional timetable changes. The solver only needs to check whether
+                that exact request is feasible, so optimization priorities do not apply.
+              </p>
             </>
+          )}
+
+          {step === 4 && (
+            <Step4Solution
+              solverLoading={solverLoading}
+              solverError={solverError}
+              solverResult={solverResult}
+              selectedModuleLabel={
+                selectedModule ? `${selectedModule.code} · ${selectedModule.title}` : null
+              }
+              selectedEventFallbackId={selectedEvent?.session.id}
+              selectedEventDayTime={selectedEventDayTime}
+              selectedEventRoom={selectedEvent?.session.room}
+              selectedEventLecturerName={selectedEvent?.lecturer?.name}
+              originalModes={originalModes}
+              getRoomName={getRoomName}
+              getLecturerName={getLecturerName}
+              formatViolationNice={formatViolationNice}
+              isRelaxableViolation={isRelaxableViolation}
+              needsInteractiveDiagnosis={needsInteractiveDiagnosis}
+              days={days}
+              timeSlots={timeSlots}
+              lecturers={data!.lecturers}
+              rooms={data!.rooms}
+              cohorts={data!.cohorts}
+              sessions={data!.sessions}
+              lecturerUnavailableSlotMap={lecturerUnavailableSlotMap}
+              excludeSessionId={selectedEvent.session.id}
+              caseAProposedSlots={caseAProposedSlots}
+              caseBProposedSlots={caseBProposedSlots}
+              diagLecturer={diagLecturer}
+              onDiagLecturerChange={setDiagLecturer}
+              diagDay={diagDay}
+              onDiagDayChange={setDiagDay}
+              diagTime={diagTime}
+              onDiagTimeChange={setDiagTime}
+              diagRoom={diagRoom}
+              onDiagRoomChange={setDiagRoom}
+              diagLoading={diagLoading}
+              diagError={diagError}
+              diagResult={diagResult}
+              onBackToRequest={() => setStep(1)}
+              onRetryWithRelaxations={runRescheduleWithRelaxations}
+              onFindRearrangements={runRescheduleWithAdditionalChanges}
+              appliedTemporaryDeactivations={appliedTemporaryDeactivations}
+            />
           )}
 
           <div className="reschedule-actions">
             {step > 1 && (
-              <button onClick={() => setStep((step - 1) as WizardStep)}>
+              <button
+                onClick={() =>
+                  setStep((step === 4 && !objectivesApplicable ? 2 : step - 1) as WizardStep)
+                }
+              >
                 Back
               </button>
             )}
 
-            {step < 5 && (
+            {step < 4 && (
               <button
                 className="primary-button"
-                onClick={() => setStep((step + 1) as WizardStep)}
+                onClick={handleContinue}
+                disabled={step === 1 && stepOneInvalid}
               >
                 Continue
               </button>
             )}
 
-            {step === 5 && (
+            {step === 4 && solverResult?.status === "feasible" && (
               <button
                 type="button"
                 className="primary-button"

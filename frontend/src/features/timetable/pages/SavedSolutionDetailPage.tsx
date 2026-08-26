@@ -1,10 +1,5 @@
-import { useState } from "react";
-import FullCalendar from "@fullcalendar/react";
-import timeGridPlugin from "@fullcalendar/timegrid";
-import type {
-  EventContentArg,
-  EventInput,
-} from "@fullcalendar/core";
+import { useEffect, useState } from "react";
+import type { EventInput } from "@fullcalendar/core";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -21,8 +16,14 @@ import {
   Users,
 } from "lucide-react";
 
-import { savedSolutions } from "../data/savedSolutionsData";
-import { getSavedSolutionById } from "../data/savedSolutionsStore";
+import type { SavedSolution } from "../data/savedSolutionsData";
+import { TimetableView } from "../../timetable/components/TimetableView";
+import { useTimetableData } from "../../timetable/hooks/useTimetableData";
+import {
+  ConstraintHierarchy,
+  type ConstraintHierarchyEntityGroup,
+} from "../../constraints/components/ConstraintHierarchy";
+import type { ConstraintDefinition } from "../../constraints/types";
 import {
   historicalStakeholderImpacts,
   type HistoricalImpactDetails,
@@ -63,6 +64,36 @@ function dateForDay(day?: string) {
   );
 }
 
+function formatDay(day?: string | null) {
+  if (!day) {
+    return "—";
+  }
+
+  const days: Record<string, string> = {
+    mon: "Monday",
+    monday: "Monday",
+    tue: "Tuesday",
+    tues: "Tuesday",
+    tuesday: "Tuesday",
+    wed: "Wednesday",
+    wednesday: "Wednesday",
+    thu: "Thursday",
+    thur: "Thursday",
+    thurs: "Thursday",
+    thursday: "Thursday",
+    fri: "Friday",
+    friday: "Friday",
+  };
+
+  const normalized = day.trim().toLowerCase();
+
+  return (
+    days[normalized] ??
+    day.charAt(0).toUpperCase() + day.slice(1)
+  );
+}
+
+
 function normalizeTime(time?: string) {
   if (!time) {
     return "00:00";
@@ -87,21 +118,137 @@ type TimetableFilterType =
 
 type FilterableSession = {
   id?: string;
-  moduleCode: string;
+
+  // Current candidate-solution snapshot shape.
+  moduleId?: string;
+  lecturerId?: string;
+  programIds?: string[];
+  cohortIds?: string[];
+  start?: string;
+  end?: string;
+  room?: string;
+  type?: string;
+
+  // Older/demo snapshot compatibility.
+  moduleCode?: string;
   moduleTitle?: string;
   day?: string;
   startTime?: string;
   endTime?: string;
-  start?: string;
-  end?: string;
-  room?: string;
   lecturer?: string;
   cohorts?: {
     id: string;
     label: string;
   }[];
-  cohortIds?: string[];
 };
+
+type AdditionalChangeSide = {
+  day?: string;
+  time?: string;
+  room_id?: string;
+  room?: string;
+  room_name?: string;
+  lecturer_id?: string;
+  lecturer?: string;
+  lecturer_name?: string;
+};
+
+type AdditionalTimetableChange = {
+  session_id?: string;
+  sessionId?: string;
+  module_id?: string;
+  module_code?: string;
+  module_title?: string;
+
+  before?: AdditionalChangeSide;
+  after?: AdditionalChangeSide;
+
+  time_changed?: boolean;
+  room_changed?: boolean;
+  lecturer_changed?: boolean;
+
+  old_day?: string;
+  old_time?: string;
+  old_room_id?: string;
+  old_lecturer_id?: string;
+
+  new_day?: string;
+  new_time?: string;
+  new_room_id?: string;
+  new_lecturer_id?: string;
+};
+
+type LecturerOption = {
+  id: string;
+  name: string;
+};
+
+type SavedConstraintSnapshotEntry = {
+  group?: string;
+  rule: string;
+  state: string;
+  relaxable: boolean;
+
+  constraint_id?: string;
+  constraint_name?: string;
+  constraint_description?: string;
+  stakeholder?: string;
+  constraint_type?: "unrelaxable" | "relaxable";
+
+  entity_id?: string;
+  entity_label?: string;
+
+  instance_id?: string;
+  instance_type?: "session" | "lecturer" | "cohort" | "room";
+
+  day?: string | null;
+  info_text?: string;
+  is_activated?: boolean;
+};
+
+function getRoomId(side: AdditionalChangeSide) {
+  return side.room_id ?? side.room;
+}
+
+function getLecturerId(side: AdditionalChangeSide) {
+  return side.lecturer_id ?? side.lecturer;
+}
+
+function normalizeAdditionalChange(change: AdditionalTimetableChange) {
+  const before: AdditionalChangeSide = change.before ?? {
+    day: change.old_day,
+    time: change.old_time,
+    room_id: change.old_room_id,
+    lecturer_id: change.old_lecturer_id,
+  };
+
+  const after: AdditionalChangeSide = change.after ?? {
+    day: change.new_day,
+    time: change.new_time,
+    room_id: change.new_room_id,
+    lecturer_id: change.new_lecturer_id,
+  };
+
+  const timeChanged =
+    change.time_changed ??
+    (before.day !== after.day || before.time !== after.time);
+
+  const roomChanged =
+    change.room_changed ??
+    (getRoomId(before) !== getRoomId(after));
+
+  const lecturerChanged =
+    change.lecturer_changed ??
+    (getLecturerId(before) !== getLecturerId(after));
+
+  return {
+    before,
+    after,
+    timeChanged,
+    roomChanged,
+    lecturerChanged,
+  };
+}
 
 
 function formatImpactMinutes(minutes: number) {
@@ -253,6 +400,54 @@ function renderCandidateImpactDetails(
   );
 }
 
+
+type RelatedClassBadge = {
+  key: string;
+  moduleCode: string;
+  moduleTitle?: string;
+};
+
+function getTimeStart(time?: string) {
+  if (!time) return null;
+
+  const match = time.match(/\d{1,2}:\d{2}/);
+
+  if (!match) return null;
+
+  const [hour, minute] = match[0].split(":");
+
+  return `${hour.padStart(2, "0")}:${minute}`;
+}
+
+function getDayKeyFromIso(value?: string) {
+  if (!value) return null;
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date
+    .toLocaleDateString("en-US", { weekday: "short" })
+    .slice(0, 3)
+    .toLowerCase();
+}
+
+function getTimeKeyFromIso(value?: string) {
+  if (!value) return null;
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return `${String(date.getHours()).padStart(2, "0")}:${String(
+    date.getMinutes(),
+  ).padStart(2, "0")}`;
+}
+
 function CollapsibleHeading({
   icon,
   title,
@@ -288,18 +483,98 @@ function CollapsibleHeading({
 export function SavedSolutionDetailPage() {
   const { solutionId } = useParams();
 
-  const [filterType, setFilterType] =
-    useState<TimetableFilterType>("all");
-  const [filterValue, setFilterValue] = useState("");
+  // The saved snapshot intentionally stores IDs for modules, lecturers,
+  // cohorts and programs. Use the normal timetable data only as metadata
+  // lookup so the historical start/end/room values still come from the
+  // saved solution itself.
+  const { data: timetableReferenceData } = useTimetableData();
 
-  // Prefer the demo data file so stakeholderImpacts are not hidden by
-  // an older copy of the same solution stored in localStorage.
-  const solution =
-    savedSolutions.find(
-      (savedSolution) => savedSolution.id === solutionId,
-    ) ??
-    getSavedSolutionById(solutionId ?? "");
+  const [solution, setSolution] = useState<SavedSolution | null>(null);
+  const [isLoadingSolution, setIsLoadingSolution] = useState(true);
+  const [solutionError, setSolutionError] = useState<string | null>(null);
+  const [lecturerNames, setLecturerNames] = useState<Record<string, string>>({});
 
+  useEffect(() => {
+    async function loadSolution() {
+      if (!solutionId) {
+        setSolution(null);
+        setSolutionError("No candidate solution ID was provided.");
+        setIsLoadingSolution(false);
+        return;
+      }
+
+      try {
+        setIsLoadingSolution(true);
+        setSolutionError(null);
+
+        const response = await fetch(
+          `http://localhost:8000/candidate-solutions/${encodeURIComponent(
+            solutionId,
+          )}`,
+        );
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            throw new Error("Saved solution not found.");
+          }
+
+          throw new Error(
+            `Failed to load candidate solution (${response.status}).`,
+          );
+        }
+
+        const data: SavedSolution = await response.json();
+        setSolution(data);
+      } catch (error) {
+        console.error("Failed to load candidate solution:", error);
+        setSolution(null);
+        setSolutionError(
+          error instanceof Error
+            ? error.message
+            : "Failed to load candidate solution.",
+        );
+      } finally {
+        setIsLoadingSolution(false);
+      }
+    }
+
+    void loadSolution();
+  }, [solutionId]);
+
+  useEffect(() => {
+    async function loadLecturerNames() {
+      try {
+        const response = await fetch("http://localhost:8000/lecturers/");
+
+        if (!response.ok) {
+          throw new Error(`Failed to load lecturers (${response.status}).`);
+        }
+
+        const lecturers: LecturerOption[] = await response.json();
+
+        setLecturerNames(
+          Object.fromEntries(
+            lecturers.map((lecturer) => [lecturer.id, lecturer.name]),
+          ),
+        );
+      } catch (error) {
+        console.error("Failed to load lecturer names:", error);
+        setLecturerNames({});
+      }
+    }
+
+    void loadLecturerNames();
+  }, []);
+
+  if (isLoadingSolution) {
+    return (
+      <section className="saved-solution-detail-page">
+        <div className="saved-solution-not-found">
+          <h1>Loading saved solution…</h1>
+        </div>
+      </section>
+    );
+  }
 
   if (!solution) {
     return (
@@ -308,8 +583,8 @@ export function SavedSolutionDetailPage() {
           <h1>Saved solution not found</h1>
 
           <p>
-            This solution may have been removed or the URL may be
-            incorrect.
+            {solutionError ??
+              "This solution may have been removed or the URL may be incorrect."}
           </p>
 
           <Link
@@ -327,105 +602,263 @@ export function SavedSolutionDetailPage() {
   const stakeholderImpacts =
     solution.stakeholderImpacts ?? [];
 
+  const affectedStakeholders =
+    solution.affectedStakeholders ?? [];
+
   const filterableSessions =
-    solution.resultingSessions as unknown as FilterableSession[];
+    (solution.resultingSessions ?? []) as unknown as FilterableSession[];
 
-  const lecturers = Array.from(
-    new Set(
-      filterableSessions
-        .map((session) => session.lecturer)
-        .filter(
-          (lecturer): lecturer is string => Boolean(lecturer),
-        ),
-    ),
-  ).sort();
+  const constraints =
+    (solution.constraints ?? []) as unknown as SavedConstraintSnapshotEntry[];
 
-  const rooms = Array.from(
-    new Set(
-      filterableSessions
-        .map((session) => session.room)
-        .filter((room): room is string => Boolean(room)),
-    ),
-  ).sort();
+  const objectives = solution.objectives ?? [];
 
-  const cohortMap = new Map<string, string>();
+  const snapshotConstraintDefinitions: ConstraintDefinition[] =
+    Array.from(
+      new Map(
+        constraints
+          .filter((constraint) => Boolean(constraint.constraint_id))
+          .map((constraint) => {
+            const id = constraint.constraint_id!;
 
-  filterableSessions.forEach((session) => {
-    const sessionCohorts =
-      session.cohorts ?? session.cohortIds ?? [];
+            const stakeholder =
+              constraint.stakeholder === "Cohort" ||
+              constraint.stakeholder === "Session" ||
+              constraint.stakeholder === "Room"
+                ? constraint.stakeholder
+                : "Lecturer";
 
-    sessionCohorts.forEach((cohort) => {
-      if (typeof cohort === "string") {
-        cohortMap.set(cohort, cohort);
-      } else {
-        cohortMap.set(cohort.id, cohort.label);
-      }
-    });
-  });
+            const definition: ConstraintDefinition = {
+              id,
+              name:
+                constraint.constraint_name ??
+                constraint.rule,
+              description:
+                constraint.constraint_description ?? "",
+              stakeholder,
+              type:
+                constraint.constraint_type ??
+                (constraint.relaxable
+                  ? "relaxable"
+                  : "unrelaxable"),
+            };
 
-  const cohorts = Array.from(cohortMap.entries())
-    .map(([value, label]) => ({
-      value,
-      label,
-    }))
-    .sort((a, b) => a.label.localeCompare(b.label));
-
-  const filterOptions =
-    filterType === "lecturer"
-      ? lecturers.map((lecturer) => ({
-          value: lecturer,
-          label: lecturer,
-        }))
-      : filterType === "cohort"
-        ? cohorts
-        : filterType === "room"
-          ? rooms.map((room) => ({
-              value: room,
-              label: room,
-            }))
-          : [];
-
-  const filteredSessions = filterableSessions.filter((session) => {
-    if (filterType === "all" || !filterValue) {
-      return true;
-    }
-
-    if (filterType === "lecturer") {
-      return session.lecturer === filterValue;
-    }
-
-    if (filterType === "room") {
-      return session.room === filterValue;
-    }
-
-    const sessionCohorts =
-      session.cohorts ?? session.cohortIds ?? [];
-
-    return sessionCohorts.some((cohort) =>
-      typeof cohort === "string"
-        ? cohort === filterValue
-        : cohort.id === filterValue,
+            return [id, definition] as const;
+          }),
+      ).values(),
     );
-  });
 
-  const activeConstraints = solution.constraints.filter(
+  const snapshotEntitiesByConstraint =
+    constraints.reduce<
+      Record<string, ConstraintHierarchyEntityGroup[]>
+    >((accumulator, constraint, index) => {
+      if (!constraint.constraint_id) {
+        return accumulator;
+      }
+
+      const constraintId = constraint.constraint_id;
+
+      if (!accumulator[constraintId]) {
+        accumulator[constraintId] = [];
+      }
+
+      const entityKey =
+        constraint.entity_id ??
+        `${constraint.instance_type ?? "instance"}-${index}`;
+
+      let entity = accumulator[constraintId].find(
+        (item) => item.key === entityKey,
+      );
+
+      if (!entity) {
+        entity = {
+          key: entityKey,
+          label:
+            constraint.entity_label ??
+            constraint.rule,
+          isDayScoped: Boolean(constraint.day),
+          leaves: [],
+        };
+
+        accumulator[constraintId].push(entity);
+      }
+
+      entity.isDayScoped =
+        entity.isDayScoped || Boolean(constraint.day);
+
+      entity.leaves.push({
+        key:
+          constraint.instance_id ??
+          `${constraintId}-${entityKey}-${index}`,
+        label:
+          constraint.day ??
+          constraint.entity_label ??
+          constraint.rule,
+        groupLabel: constraint.day
+          ? constraint.entity_label ?? null
+          : null,
+        infoText: constraint.info_text ?? "",
+        instanceType:
+          constraint.instance_type ?? "session",
+        instanceId:
+          constraint.instance_id ??
+          `${constraintId}-${index}`,
+        isActivated:
+          constraint.is_activated ??
+          !constraint.state
+            .toLowerCase()
+            .includes("deactivated"),
+        relaxation: null,
+        statusLabel: constraint.state,
+      });
+
+      return accumulator;
+    }, {});
+
+  const hasRichConstraintSnapshot =
+    snapshotConstraintDefinitions.length > 0;
+
+  const solveSettings = (
+    solution as SavedSolution & {
+      solveSettings?: {
+        objectivesApplicable?: boolean;
+      };
+      solve_settings?: {
+        objectives_applicable?: boolean;
+      };
+    }
+  );
+
+  // New saves explicitly record whether optimization participated in the solve.
+  // For older saves, fall back to whether objective rows were actually stored.
+  const objectivesApplicable =
+    solveSettings.solveSettings?.objectivesApplicable ??
+    solveSettings.solve_settings?.objectives_applicable ??
+    objectives.length > 0;
+  const additionalChanges = (
+    solution.additionalChanges ?? []
+  ) as unknown as AdditionalTimetableChange[];
+
+  const getLecturerName = (lecturerId?: string) => {
+    if (!lecturerId) {
+      return "Unassigned";
+    }
+
+    const affectedLecturer = affectedStakeholders.find(
+      (stakeholder) =>
+        stakeholder.type === "lecturer" && stakeholder.id === lecturerId,
+    );
+
+    return (
+      lecturerNames[lecturerId] ??
+      affectedLecturer?.label ??
+      "Unknown lecturer"
+    );
+  };
+
+  const activeConstraints = constraints.filter(
     (constraint) => constraint.state !== "Disabled",
   );
 
-  const inactiveWelfareConstraints = solution.constraints.filter(
+  const inactiveWelfareConstraints = constraints.filter(
     (constraint) => constraint.state === "Disabled",
   );
 
-  const activeObjectives = solution.objectives.filter(
+  const affectedStakeholderCount =
+    affectedStakeholders.length;
+
+  const disabledConstraintCount = constraints.filter(
+    (constraint) => {
+      const state = constraint.state.toLowerCase();
+
+      return (
+        state.includes("disabled") ||
+        state.includes("deactivated")
+      );
+    },
+  ).length;
+
+  const relaxedConstraintCount = constraints.filter(
+    (constraint) =>
+      constraint.state
+        .toLowerCase()
+        .includes("relax"),
+  ).length;
+
+  const activeObjectives = objectives.filter(
     (objective) => objective.enabled,
   );
 
-  const additionalChangeModules = new Set(
-    solution.additionalChanges.map((change) => change.moduleCode),
+  const additionalChangeSessionIds = new Set(
+    additionalChanges
+      .map((change) => change.session_id ?? change.sessionId)
+      .filter((sessionId): sessionId is string => Boolean(sessionId)),
   );
 
-  const calendarEvents: EventInput[] =
-    filteredSessions.map((savedSession) => {
+  const additionalChangeModules = new Set(
+    additionalChanges
+      .map((change) => change.module_code)
+      .filter((module): module is string => Boolean(module)),
+  );
+
+  const savedTimetableEvents: EventInput[] =
+    filterableSessions.map((savedSession) => {
+      const module = timetableReferenceData?.modules.find(
+        (item) => item.id === savedSession.moduleId,
+      );
+
+      const moduleCode =
+        module?.code ??
+        savedSession.moduleCode ??
+        savedSession.moduleId ??
+        "Unknown module";
+
+      const moduleTitle =
+        module?.title ??
+        savedSession.moduleTitle;
+
+      const lecturer = timetableReferenceData?.lecturers.find(
+        (item) => item.id === savedSession.lecturerId,
+      );
+
+      const lecturerName =
+        lecturer?.name ??
+        savedSession.lecturer ??
+        (savedSession.lecturerId
+          ? lecturerNames[savedSession.lecturerId]
+          : undefined) ??
+        savedSession.lecturerId ??
+        "Unassigned";
+
+      const cohorts =
+        savedSession.cohorts?.map((cohort) => ({
+          id: cohort.id,
+          name: cohort.label,
+        })) ??
+        (savedSession.cohortIds ?? []).map((cohortId) => {
+          const cohort =
+            timetableReferenceData?.cohorts.find(
+              (item) => item.id === cohortId,
+            );
+
+          return {
+            id: cohortId,
+            name: cohort?.name ?? cohortId,
+          };
+        });
+
+      const programs =
+        (savedSession.programIds ?? []).map((programId) => {
+          const program =
+            timetableReferenceData?.programs.find(
+              (item) => item.id === programId,
+            );
+
+          return {
+            id: programId,
+            name: program?.name ?? programId,
+          };
+        });
 
       const date = dateForDay(savedSession.day);
 
@@ -437,87 +870,226 @@ export function SavedSolutionDetailPage() {
         savedSession.end ??
         `${date}T${normalizeTime(savedSession.endTime)}:00`;
 
-      const isRequestedChange =
-        savedSession.moduleCode === solution.moduleCode;
-
-      const isAdditionalChange =
-        !isRequestedChange &&
-        additionalChangeModules.has(savedSession.moduleCode);
-
       return {
-          id:
-            savedSession.id ??
-            `${savedSession.moduleCode}-${savedSession.day}-${savedSession.startTime}-${savedSession.room}`,
-          title: savedSession.moduleCode,
-          start,
-          end,
-          classNames: [
-            isRequestedChange
-              ? "saved-calendar-event-requested"
-              : isAdditionalChange
-                ? "saved-calendar-event-additional"
-                : "saved-calendar-event-unchanged",
-          ],
-          extendedProps: {
-            moduleCode: savedSession.moduleCode,
+        id:
+          savedSession.id ??
+          `${savedSession.moduleId ?? moduleCode}-${start}-${savedSession.room ?? "room"}`,
+        title: moduleTitle
+          ? `${moduleCode} · ${moduleTitle}`
+          : moduleCode,
+        start,
+        end,
+        extendedProps: {
+          moduleCode,
+          moduleId: savedSession.moduleId,
+          session: {
+            id: savedSession.id,
             room: savedSession.room ?? "TBC",
-            lecturer: savedSession.lecturer ?? "Unassigned",
-            cohorts: savedSession.cohorts ?? [],
           },
-        };
+          lecturer: {
+            id:
+              savedSession.lecturerId ??
+              lecturerName,
+            name: lecturerName,
+          },
+          cohorts,
+          programs,
+        },
+      } satisfies EventInput;
     });
 
-  function renderCalendarEvent(eventInfo: EventContentArg) {
-  const {
-    moduleCode,
-    room,
-    lecturer,
-    cohorts,
-  } = eventInfo.event.extendedProps as {
-    moduleCode: string;
-    room: string;
-    lecturer: string;
-    cohorts: {
-      id: string;
-      label: string;
-    }[];
-  };
 
-  const cohortText = cohorts
-    .map((cohort) => cohort.label)
-    .join(", ");
+  const requestedSessionId =
+    (
+      solution as SavedSolution & {
+        requestedSessionId?: string;
+        requested_session_id?: string;
+      }
+    ).requestedSessionId ??
+    (
+      solution as SavedSolution & {
+        requested_session_id?: string;
+      }
+    ).requested_session_id ??
+    null;
 
-  return (
-    <div className="saved-calendar-event-content">
-      <strong>{moduleCode}</strong>
 
-      <span className="saved-calendar-event-time">
-        {eventInfo.timeText}
-      </span>
-
-      {filterType === "lecturer" && (
-        <>
-          <span>{room}</span>
-          {cohortText && <span>{cohortText}</span>}
-        </>
-      )}
-
-      {filterType === "cohort" && (
-        <>
-          <span>{room}</span>
-          <span>{lecturer}</span>
-        </>
-      )}
-
-      {filterType === "room" && (
-        <>
-          <span>{lecturer}</span>
-          {cohortText && <span>{cohortText}</span>}
-        </>
-      )}
-    </div>
+  const requestedModule = timetableReferenceData?.modules.find(
+    (module) => module.code === solution.moduleCode,
   );
-}
+
+  const requestedResultDay =
+    solution.result.day.trim().slice(0, 3).toLowerCase();
+  const requestedResultStart = getTimeStart(solution.result.time);
+
+  const requestedSnapshotSession =
+    filterableSessions.find(
+      (session) => session.id === requestedSessionId,
+    ) ??
+    filterableSessions.find((session) => {
+      if (
+        requestedModule &&
+        session.moduleId !== requestedModule.id
+      ) {
+        return false;
+      }
+
+      if (!requestedModule && session.moduleCode !== solution.moduleCode) {
+        return false;
+      }
+
+      const day =
+        session.day?.trim().slice(0, 3).toLowerCase() ??
+        getDayKeyFromIso(session.start);
+
+      const startTime =
+        getTimeStart(session.startTime) ??
+        getTimeKeyFromIso(session.start);
+
+      return (
+        day === requestedResultDay &&
+        (!requestedResultStart ||
+          startTime === requestedResultStart)
+      );
+    });
+
+  const changedSessionClassBadges = new Map<
+    string,
+    RelatedClassBadge
+  >();
+
+  function addChangedSessionBadge(
+    session: FilterableSession | undefined,
+    fallbackCode?: string,
+    fallbackTitle?: string,
+  ) {
+    if (!session && !fallbackCode) return;
+
+    const module = timetableReferenceData?.modules.find(
+      (item) => item.id === session?.moduleId,
+    );
+
+    const moduleCode =
+      module?.code ??
+      session?.moduleCode ??
+      fallbackCode ??
+      session?.moduleId ??
+      "Class";
+
+    const moduleTitle =
+      module?.title ??
+      session?.moduleTitle ??
+      fallbackTitle;
+
+    const key =
+      session?.id ??
+      `${moduleCode}-${moduleTitle ?? ""}`;
+
+    changedSessionClassBadges.set(key, {
+      key,
+      moduleCode,
+      moduleTitle,
+    });
+  }
+
+  addChangedSessionBadge(
+    requestedSnapshotSession,
+    solution.moduleCode,
+    solution.moduleTitle,
+  );
+
+  additionalChanges.forEach((change) => {
+    const sessionId =
+      change.session_id ?? change.sessionId;
+
+    const session = sessionId
+      ? filterableSessions.find(
+          (item) => item.id === sessionId,
+        )
+      : undefined;
+
+    addChangedSessionBadge(
+      session,
+      change.module_code,
+      change.module_title,
+    );
+  });
+
+  const getRelatedClassesForStakeholder = (
+    stakeholder: (typeof affectedStakeholders)[number],
+  ): RelatedClassBadge[] => {
+    const related = new Map<string, RelatedClassBadge>();
+
+    const considerSession = (
+      session: FilterableSession | undefined,
+      fallbackCode?: string,
+      fallbackTitle?: string,
+    ) => {
+      if (!session) return;
+
+      const matches =
+        stakeholder.type === "lecturer"
+          ? session.lecturerId === stakeholder.id
+          : stakeholder.type === "cohort"
+            ? (session.cohortIds ?? []).includes(
+                stakeholder.id,
+              )
+            : stakeholder.type === "room"
+              ? session.room === stakeholder.label
+              : false;
+
+      if (!matches) return;
+
+      const module = timetableReferenceData?.modules.find(
+        (item) => item.id === session.moduleId,
+      );
+
+      const moduleCode =
+        module?.code ??
+        session.moduleCode ??
+        fallbackCode ??
+        session.moduleId ??
+        "Class";
+
+      const moduleTitle =
+        module?.title ??
+        session.moduleTitle ??
+        fallbackTitle;
+
+      const key = `${moduleCode}-${moduleTitle ?? ""}`;
+
+      related.set(key, {
+        key,
+        moduleCode,
+        moduleTitle,
+      });
+    };
+
+    considerSession(
+      requestedSnapshotSession,
+      solution.moduleCode,
+      solution.moduleTitle,
+    );
+
+    additionalChanges.forEach((change) => {
+      const sessionId =
+        change.session_id ?? change.sessionId;
+
+      const session = sessionId
+        ? filterableSessions.find(
+            (item) => item.id === sessionId,
+          )
+        : undefined;
+
+      considerSession(
+        session,
+        change.module_code,
+        change.module_title,
+      );
+    });
+
+    return Array.from(related.values());
+  };
 
   return (
     <section className="saved-solution-detail-page">
@@ -582,7 +1154,7 @@ export function SavedSolutionDetailPage() {
               <div className="saved-detail-change-column">
                 <span className="saved-detail-label">From</span>
 
-                <strong>{solution.original.day}</strong>
+                <strong>{formatDay(solution.original.day)}</strong>
 
                 <div>
                   <Clock size={16} />
@@ -607,7 +1179,7 @@ export function SavedSolutionDetailPage() {
               <div className="saved-detail-change-column">
                 <span className="saved-detail-label">To</span>
 
-                <strong>{solution.result.day}</strong>
+                <strong>{formatDay(solution.result.day)}</strong>
 
                 <div>
                   <Clock size={16} />
@@ -628,7 +1200,7 @@ export function SavedSolutionDetailPage() {
             </div>
           </details>
 
-          {solution.additionalChanges.length > 0 && (
+          {additionalChanges.length > 0 && (
             <details
               className="saved-detail-card saved-detail-collapsible"
               open
@@ -642,24 +1214,72 @@ export function SavedSolutionDetailPage() {
               <div className="saved-detail-collapsible-content">
 
               <div className="saved-detail-additional-list">
-                {solution.additionalChanges.map(
-                  (change, index) => (
+                {additionalChanges.map((change, index) => {
+                  const {
+                    before,
+                    after,
+                    timeChanged,
+                    roomChanged,
+                    lecturerChanged,
+                  } = normalizeAdditionalChange(change);
+
+                  const beforeRoom = getRoomId(before);
+                  const afterRoom = getRoomId(after);
+                  const beforeLecturerId = getLecturerId(before);
+                  const afterLecturerId = getLecturerId(after);
+
+                  const changeKey =
+                    change.session_id ??
+                    change.sessionId ??
+                    change.module_id ??
+                    change.module_code ??
+                    String(index);
+
+                  const changeTitle =
+                    change.module_code
+                      ? change.module_title
+                        ? `${change.module_code} · ${change.module_title}`
+                        : change.module_code
+                      : change.module_id ??
+                        change.session_id ??
+                        change.sessionId ??
+                        "Additional change";
+
+                  return (
                     <article
-                      key={`${change.moduleCode}-${index}`}
+                      key={`${changeKey}-${index}`}
                       className="saved-detail-additional-change"
                     >
-                      <h3>{change.moduleCode}</h3>
+                      <h3>{changeTitle}</h3>
 
                       <div className="saved-detail-additional-grid">
                         <div>
                           <span>Before</span>
 
-                          <strong>{change.before.day}</strong>
+                          {timeChanged && (
+                            <>
+                              <strong>{formatDay(before.day)}</strong>
+                              <p>
+                                <Clock size={16} />
+                                {before.time ?? "—"}
+                              </p>
+                            </>
+                          )}
 
-                          <p>
-                            {change.before.time},{" "}
-                            {change.before.room}
-                          </p>
+                          {roomChanged && (
+                            <p>
+                              <MapPin size={16} />
+                              {before.room_name ?? beforeRoom ?? "No room"}
+                            </p>
+                          )}
+
+                          {lecturerChanged && (
+                            <p>
+                              <UserRound size={16} />
+                              {before.lecturer_name ??
+                                getLecturerName(beforeLecturerId)}
+                            </p>
+                          )}
                         </div>
 
                         <ArrowRight size={20} />
@@ -667,18 +1287,35 @@ export function SavedSolutionDetailPage() {
                         <div>
                           <span>After</span>
 
-                          <strong>{change.after.day}</strong>
+                          {timeChanged && (
+                            <>
+                              <strong>{formatDay(after.day)}</strong>
+                              <p>
+                                <Clock size={16} />
+                                {after.time ?? "—"}
+                              </p>
+                            </>
+                          )}
 
-                          <p>
-                            {change.after.time},{" "}
-                            {change.after.room}
-                          </p>
+                          {roomChanged && (
+                            <p>
+                              <MapPin size={16} />
+                              {after.room_name ?? afterRoom ?? "No room"}
+                            </p>
+                          )}
+
+                          {lecturerChanged && (
+                            <p>
+                              <UserRound size={16} />
+                              {after.lecturer_name ??
+                                getLecturerName(afterLecturerId)}
+                            </p>
+                          )}
                         </div>
                       </div>
                     </article>
-                  ),
-                )}
-              </div>
+                  );
+                })}              </div>
               </div>
             </details>
           )}
@@ -797,53 +1434,62 @@ export function SavedSolutionDetailPage() {
             <CollapsibleHeading
               icon={<CheckCircle2 size={20} />}
               title="Constraint settings"
-              description="Active and inactive constraint settings captured when this solution was generated."
+              description="Constraint settings captured when this solution was generated."
             />
 
             <div className="saved-detail-collapsible-content">
-
-            <div className="saved-detail-table-wrapper">
-              <table className="saved-detail-table">
-                <thead>
-                  <tr>
-                    <th>Stakeholder</th>
-                    <th>Constraint</th>
-                    <th>Status</th>
-                    <th>Relaxable</th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {solution.constraints.map(
-                    (constraint, index) => (
-                      <tr key={`${constraint.rule}-${index}`}>
-                        <td>{constraint.group}</td>
-                        <td>{constraint.rule}</td>
-                        <td>
-                          <span
-                            className={[
-                              "saved-detail-badge",
-                              constraint.state === "Disabled"
-                                ? "saved-detail-badge-disabled"
-                                : constraint.state
-                                      .toLowerCase()
-                                      .includes("relaxed")
-                                  ? "saved-detail-badge-warning"
-                                  : "saved-detail-badge-success",
-                            ].join(" ")}
-                          >
-                            {constraint.state}
-                          </span>
-                        </td>
-                        <td>
-                          {constraint.relaxable ? "Yes" : "No"}
-                        </td>
+              {hasRichConstraintSnapshot ? (
+                <ConstraintHierarchy
+                  constraints={snapshotConstraintDefinitions}
+                  entitiesByConstraint={snapshotEntitiesByConstraint}
+                  mode="snapshot"
+                  hideEmptyConstraints
+                  showStatusSummary
+                  allowExceptionFilter
+                  initialOpenStakeholders={["Lecturer"]}
+                />
+              ) : (
+                <div className="saved-detail-table-wrapper">
+                  <table className="saved-detail-table">
+                    <thead>
+                      <tr>
+                        <th>Stakeholder</th>
+                        <th>Constraint</th>
+                        <th>Status</th>
+                        <th>Relaxable</th>
                       </tr>
-                    ),
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    </thead>
+
+                    <tbody>
+                      {constraints.map((constraint, index) => (
+                        <tr key={`${constraint.rule}-${index}`}>
+                          <td>{constraint.group ?? "—"}</td>
+                          <td>{constraint.rule}</td>
+                          <td>
+                            <span
+                              className={[
+                                "saved-detail-badge",
+                                constraint.state === "Disabled"
+                                  ? "saved-detail-badge-disabled"
+                                  : constraint.state
+                                        .toLowerCase()
+                                        .includes("relaxed")
+                                    ? "saved-detail-badge-warning"
+                                    : "saved-detail-badge-success",
+                              ].join(" ")}
+                            >
+                              {constraint.state}
+                            </span>
+                          </td>
+                          <td>
+                            {constraint.relaxable ? "Yes" : "No"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </details>
 
@@ -858,31 +1504,41 @@ export function SavedSolutionDetailPage() {
             />
 
             <div className="saved-detail-collapsible-content">
-
-            <div className="saved-detail-objectives">
-              {activeObjectives.map((objective) => (
-                <div
-                  key={objective.id}
-                  className="saved-detail-objective"
-                >
-                  <div className="saved-detail-objective-copy">
-                    <span>{objective.stakeholder}</span>
-                    <strong>{objective.label}</strong>
-                  </div>
-
-                  <div className="saved-detail-objective-weight">
+              {objectivesApplicable ? (
+                <div className="saved-detail-objectives">
+                  {activeObjectives.map((objective) => (
                     <div
-                      className="saved-detail-objective-fill"
-                      style={{
-                        width: `${objective.weight}%`,
-                      }}
-                  />
+                      key={objective.id}
+                      className="saved-detail-objective"
+                    >
+                      <div className="saved-detail-objective-copy">
+                        <span>{objective.stakeholder}</span>
+                        <strong>{objective.label}</strong>
+                      </div>
 
-                    <span>{objective.weight}</span>
-                  </div>
+                      <div className="saved-detail-objective-weight">
+                        <div
+                          className="saved-detail-objective-fill"
+                          style={{
+                            width: `${objective.weight}%`,
+                          }}
+                        />
+
+                        <span>{objective.weight}</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              ) : (
+                <div className="saved-detail-objectives-not-applicable">
+                  <strong>Optimization priorities not applicable</strong>
+                  <p>
+                    This was a feasibility-only request. The permitted outcome was
+                    fully specified, so the solver did not need to rank alternative
+                    solutions using objective weights.
+                  </p>
+                </div>
+              )}
             </div>
           </details>
 
@@ -897,143 +1553,21 @@ export function SavedSolutionDetailPage() {
             />
 
             <div className="saved-detail-collapsible-content">
-
-            <div className="saved-detail-calendar-filters">
-              <fieldset className="saved-detail-filter-type-group">
-                <legend>Filter timetable by</legend>
-
-                <div className="saved-detail-filter-radio-list">
-                  {(
-                    [
-                      ["all", "All sessions"],
-                      ["lecturer", "Lecturer"],
-                      ["cohort", "Cohort"],
-                      ["room", "Room"],
-                    ] as const
-                  ).map(([value, label]) => (
-                    <label
-                      key={value}
-                      className={[
-                        "saved-detail-filter-radio",
-                        filterType === value ? "is-selected" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
-                    >
-                      <input
-                        type="radio"
-                        name="timetable-filter-type"
-                        value={value}
-                        checked={filterType === value}
-                        onChange={() => {
-                          setFilterType(value);
-                          setFilterValue("");
-                        }}
-                      />
-
-                      <span>{label}</span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-
-              {filterType !== "all" && (
-                <label className="saved-detail-filter-field">
-                  <span>
-                    Select {filterType}
-                  </span>
-
-                  <select
-                    value={filterValue}
-                    onChange={(event) =>
-                      setFilterValue(event.target.value)
-                    }
-                  >
-                    <option value="">All {filterType}s</option>
-
-                    {filterOptions.map((option) => (
-                      <option
-                        key={option.value}
-                        value={option.value}
-                      >
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-
-              <span className="saved-detail-filter-result-count">
-                {filteredSessions.length}{" "}
-                {filteredSessions.length === 1
-                  ? "session"
-                  : "sessions"}
-              </span>
-            </div>
-
-            {filterType === "cohort" && cohorts.length === 0 && (
-              <p className="saved-detail-filter-message">
-                No cohort information is stored in this saved timetable.
-                Add a <code>cohorts</code> or <code>cohortIds</code> array
-                to each resulting session to enable cohort filtering.
-              </p>
-            )}
-
-            <div className="saved-detail-calendar">
-              <FullCalendar
-                key={`${filterType}-${filterValue}`}
-                plugins={[timeGridPlugin]}
-                initialView="timeGridWeek"
-                initialDate={REFERENCE_WEEK_START}
-                weekends={false}
-                allDaySlot={false}
-                slotMinTime="08:00:00"
-                slotMaxTime="20:00:00"
-                slotDuration="00:30:00"
-                height="auto"
-                editable={false}
-                selectable={false}
-                headerToolbar={{
-                    left: "",
-                    center: "",
-                    right: "",
-                  }}
-                dayHeaderFormat={{
-                    weekday: "short",
-                    day: "numeric",
-                    month: "short",
-                  }}
-                eventTimeFormat={{
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    hour12: false,
-                  }}
-                slotLabelFormat={{
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    hour12: false,
-                  }}
-                events={calendarEvents}
-                eventContent={renderCalendarEvent}
-                />
-            </div>
-
-            <div className="saved-detail-calendar-legend">
-              <span>
-                <i className="saved-calendar-key requested" />
-                Requested move
-              </span>
-
-              <span>
-                <i className="saved-calendar-key additional" />
-                Additional change
-              </span>
-
-              <span>
-                <i className="saved-calendar-key unchanged" />
-                Unchanged session
-              </span>
-            </div>
+              <TimetableView
+                events={savedTimetableEvents}
+                showHeader={false}
+                showLegend={false}
+                showFilters
+                showWeekHeading
+                showLecturerAvailability={false}
+                readOnly
+                embedded
+                requestedSessionId={requestedSessionId}
+                requestedModuleCode={solution.moduleCode}
+                additionalChangeSessionIds={additionalChangeSessionIds}
+                additionalChangeModuleCodes={additionalChangeModules}
+                showSolutionLegend
+              />
             </div>
           </details>
         </main>
@@ -1078,7 +1612,12 @@ export function SavedSolutionDetailPage() {
 
               <div>
                 <dt>Additional changes</dt>
-                <dd>{solution.additionalChanges.length}</dd>
+                <dd>{additionalChanges.length}</dd>
+              </div>
+
+              <div>
+                <dt>Affected stakeholders</dt>
+                <dd>{affectedStakeholderCount}</dd>
               </div>
 
               <div>
@@ -1087,8 +1626,13 @@ export function SavedSolutionDetailPage() {
               </div>
 
               <div className="saved-detail-summary-warning">
-                <dt>Inactive welfare constraints</dt>
-                <dd>{inactiveWelfareConstraints.length}</dd>
+                <dt>Constraints disabled</dt>
+                <dd>{disabledConstraintCount}</dd>
+              </div>
+
+              <div className="saved-detail-summary-warning">
+                <dt>Constraints relaxed</dt>
+                <dd>{relaxedConstraintCount}</dd>
               </div>
 
               <div className="saved-detail-summary-danger">
@@ -1097,8 +1641,12 @@ export function SavedSolutionDetailPage() {
               </div>
 
               <div>
-                <dt>Active objectives</dt>
-                <dd>{activeObjectives.length}</dd>
+                <dt>Optimization priorities</dt>
+                <dd>
+                  {objectivesApplicable
+                    ? `${activeObjectives.length} active`
+                    : "Not applicable"}
+                </dd>
               </div>
               </dl>
             </div>
@@ -1125,34 +1673,60 @@ export function SavedSolutionDetailPage() {
 
             <div className="saved-detail-sidebar-content">
               <div className="saved-detail-stakeholders">
-              {solution.affectedStakeholders.map(
+              {affectedStakeholders.map(
                 (stakeholder) => {
                   const impactCount = stakeholderImpacts.filter(
                     (impact) => impact.stakeholderId === stakeholder.id,
                   ).length;
 
-                  return (
-                  <Link
-                    key={`${stakeholder.type}-${stakeholder.id}`}
-                    to={`/timetable-preview?${stakeholder.type}=${encodeURIComponent(
-                      stakeholder.id,
-                    )}`}
-                    className="saved-detail-stakeholder"
-                  >
-                    <div>
-                      <span>{stakeholder.type}</span>
-                      <strong>{stakeholder.label}</strong>
-                    </div>
+                  const relatedClasses =
+                    getRelatedClassesForStakeholder(
+                      stakeholder,
+                    );
 
-                    <span className="saved-detail-stakeholder-action">
-                      {impactCount > 0 && (
-                        <span className="saved-detail-stakeholder-impact-count">
-                          {impactCount} impact{impactCount === 1 ? "" : "s"}
-                        </span>
-                      )}
-                      <ArrowRight size={17} />
-                    </span>
-                  </Link>
+                  return (
+                    <Link
+                      key={`${stakeholder.type}-${stakeholder.id}`}
+                      to={`/timetable-preview?${stakeholder.type}=${encodeURIComponent(
+                        stakeholder.type === "room"
+                          ? stakeholder.label
+                          : stakeholder.id,
+                      )}&solution=${encodeURIComponent(solution.id)}`}
+                      className="saved-detail-stakeholder"
+                    >
+                      <div className="saved-detail-stakeholder-copy">
+                        <span>{stakeholder.type}</span>
+                        <strong>{stakeholder.label}</strong>
+
+                        {relatedClasses.length > 0 && (
+                          <div className="saved-detail-stakeholder-class-badges">
+                            {relatedClasses.map(
+                              (relatedClass) => (
+                                <span
+                                  key={relatedClass.key}
+                                  className="saved-detail-stakeholder-class-badge"
+                                >
+                                  {relatedClass.moduleCode}
+                                  {relatedClass.moduleTitle
+                                    ? ` · ${relatedClass.moduleTitle}`
+                                    : ""}
+                                </span>
+                              ),
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <span className="saved-detail-stakeholder-action">
+                        {impactCount > 0 && (
+                          <span className="saved-detail-stakeholder-impact-count">
+                            {impactCount} impact
+                            {impactCount === 1 ? "" : "s"}
+                          </span>
+                        )}
+                        <ArrowRight size={17} />
+                      </span>
+                    </Link>
                   );
                 },
               )}

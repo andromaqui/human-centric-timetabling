@@ -1,0 +1,151 @@
+.review-constraints-link {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d7ddf5;
+  border-radius: 999px;
+  padding: 10px 16px;
+  background: white;
+  color: #3f4b8f;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.review-constraints-link:hover {
+  background: #eef2fd;
+}
+
+.constraint-overview-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.constraint-overview-group {
+  overflow: hidden;
+}
+
+.constraint-overview-header,
+.constraint-overview-rule-header,
+.constraint-overview-entity-header {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.constraint-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.constraint-overview-header > span:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.constraint-overview-header small,
+.constraint-overview-rule-header small,
+.constraint-overview-leaf small {
+  color: #6b7290;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.constraint-overview-content {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.constraint-overview-rule {
+  border: 1px solid #e5e7ef;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.constraint-overview-rule-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 14px;
+}
+
+.constraint-overview-rule-header .constraint-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.constraint-overview-entities {
+  border-top: 1px solid #eceef4;
+}
+
+.constraint-overview-entity + .constraint-overview-entity,
+.constraint-overview-leaf + .constraint-overview-leaf {
+  border-top: 1px solid #eceef4;
+}
+
+.constraint-overview-entity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  font-weight: 600;
+}
+
+.constraint-overview-days {
+  border-top: 1px solid #eceef4;
+  background: #fafbfe;
+}
+
+.constraint-overview-leaf {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, auto);
+  gap: 18px;
+  align-items: center;
+  padding: 11px 14px;
+}
+
+.constraint-overview-leaf .constraint-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.constraint-overview-leaf .constraint-state {
+  justify-self: end;
+  text-align: right;
+}
+
+@media (max-width: 720px) {
+  .constraint-overview-rule-header,
+  .constraint-overview-leaf {
+    align-items: flex-start;
+  }
+
+  .constraint-overview-leaf {
+    grid-template-columns: 1fr;
+  }
+
+  .constraint-overview-leaf .constraint-state {
+    justify-self: start;
+    text-align: left;
+  }
+}
+
+.constraint-group-block {
+  display: grid;
+  gap: 12px;
+}

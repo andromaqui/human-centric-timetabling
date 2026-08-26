@@ -1,116 +1,103 @@
+import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import FullCalendar from "@fullcalendar/react";
-import timeGridPlugin from "@fullcalendar/timegrid";
-
 import { useTimetableData } from "../hooks/useTimetableData";
-import { lecturerUnavailableSlots } from "../data/timetableData";
 import { mapSessionsToCalendarEvents } from "../utils/calendarMappers";
 import type { Session } from "../types";
+import {
+  TimetableView,
+  type TimetableInitialFilter,
+} from "../components/TimetableView";
 
 import "../components/TimetableCalendar.css";
 
-type StakeholderKind = "lecturer" | "cohort" | "program" | "room";
+type StakeholderKind =
+  | "lecturer"
+  | "cohort"
+  | "program"
+  | "room";
 
-function getFilteredSessions(
-  sessions: Session[],
-  kind: StakeholderKind | null,
-  value: string | null,
-) {
-  if (!kind || !value) return sessions;
+type SavedSolutionChange = {
+  session_id?: string;
+  sessionId?: string;
+  module_code?: string;
+};
 
-  return sessions.filter((session) => {
-    if (kind === "lecturer") {
-      return session.lecturerId === value;
-    }
+type SavedSolutionHighlight = {
+  moduleCode?: string;
+  moduleTitle?: string;
 
-    if (kind === "cohort") {
-      return session.cohortIds.includes(value);
-    }
+  requestedSessionId?: string;
+  requested_session_id?: string;
 
-    if (kind === "program") {
-      return session.programIds.includes(value);
-    }
+  result?: {
+    day?: string;
+    time?: string;
+    room?: string;
+    lecturer?: string;
+  };
 
-    if (kind === "room") {
-      return session.room === value;
-    }
+  additionalChanges?: SavedSolutionChange[];
 
-    return false;
-  });
+  resultingSessions?: Session[];
+};
+
+function normalizeDayFromIso(value?: string) {
+  if (!value) return null;
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date
+    .toLocaleDateString("en-US", {
+      weekday: "short",
+    })
+    .slice(0, 3)
+    .toLowerCase();
 }
 
-const dayToDate: Record<string, string> = {
-  mon: "2026-09-21",
-  tue: "2026-09-22",
-  wed: "2026-09-23",
-  thu: "2026-09-24",
-  fri: "2026-09-25",
-};
+function normalizeTimeFromIso(value?: string) {
+  if (!value) return null;
 
-type BackgroundEvent = {
-  id: string;
-  title: string;
-  start: string;
-  end: string;
-  display: string;
-  backgroundColor: string;
-};
+  const date = new Date(value);
 
-function buildUnavailableEvents(slotIds: string[]): BackgroundEvent[] {
-  const hoursByDay: Record<string, number[]> = {};
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
 
-  slotIds.forEach((slotId) => {
-    const [day, hourString] = slotId.split("-");
-    const hour = parseInt(hourString, 10);
+  return `${String(date.getHours()).padStart(
+    2,
+    "0",
+  )}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 
-    if (!hoursByDay[day]) {
-      hoursByDay[day] = [];
-    }
+function normalizeTimeFromText(value?: string) {
+  if (!value) return null;
 
-    hoursByDay[day].push(hour);
-  });
+  const match = value.match(/\d{1,2}:\d{2}/);
 
-  const events: BackgroundEvent[] = [];
+  if (!match) {
+    return null;
+  }
 
-  Object.entries(hoursByDay).forEach(([day, hours]) => {
-    const date = dayToDate[day];
+  const [hour, minute] = match[0].split(":");
 
-    if (!date || hours.length === 0) {
-      return;
-    }
-
-    const sortedHours = [...hours].sort((a, b) => a - b);
-
-    let blockStart = sortedHours[0];
-    let previousHour = sortedHours[0];
-
-    for (let index = 1; index <= sortedHours.length; index++) {
-      const currentHour = sortedHours[index];
-      const isConsecutive = currentHour === previousHour + 1;
-
-      if (!isConsecutive) {
-        events.push({
-          id: `unavailable-${day}-${blockStart}`,
-          title: "Unavailable",
-          start: `${date}T${String(blockStart).padStart(2, "0")}:00:00`,
-          end: `${date}T${String(previousHour + 1).padStart(2, "0")}:00:00`,
-          display: "background",
-          backgroundColor: "#dc2626",
-        });
-
-        blockStart = currentHour;
-      }
-
-      previousHour = currentHour;
-    }
-  });
-
-  return events;
+  return `${hour.padStart(2, "0")}:${minute}`;
 }
 
 export function StakeholderTimetablePage() {
   const [searchParams] = useSearchParams();
   const { data, loading, error } = useTimetableData();
+
+  const [savedSolution, setSavedSolution] =
+    useState<SavedSolutionHighlight | null>(null);
+
+  const [solutionLoading, setSolutionLoading] =
+    useState(false);
+
+  const solutionId = searchParams.get("solution");
 
   const kind: StakeholderKind | null =
     (searchParams.get("type") as StakeholderKind | null) ??
@@ -131,6 +118,57 @@ export function StakeholderTimetablePage() {
     searchParams.get("program") ??
     searchParams.get("room");
 
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!solutionId) {
+      setSavedSolution(null);
+      setSolutionLoading(false);
+      return;
+    }
+
+    setSolutionLoading(true);
+
+    fetch(
+      `http://localhost:8000/candidate-solutions/${encodeURIComponent(
+        solutionId,
+      )}`,
+    )
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(
+            `Failed to load saved solution (${response.status}).`,
+          );
+        }
+
+        return response.json();
+      })
+      .then((solution: SavedSolutionHighlight) => {
+        if (!cancelled) {
+          setSavedSolution(solution);
+        }
+      })
+      .catch((requestError) => {
+        if (cancelled) return;
+
+        console.error(
+          "Could not load saved solution for timetable preview:",
+          requestError,
+        );
+
+        setSavedSolution(null);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSolutionLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [solutionId]);
+
   if (loading) {
     return (
       <section className="timetable-shell">
@@ -142,7 +180,10 @@ export function StakeholderTimetablePage() {
   if (error || !data) {
     return (
       <section className="timetable-shell">
-        <Link to={-1 as unknown as string} className="back-link">
+        <Link
+          to={-1 as unknown as string}
+          className="back-link"
+        >
           ← Back
         </Link>
 
@@ -151,40 +192,55 @@ export function StakeholderTimetablePage() {
     );
   }
 
-  const filteredSessions = getFilteredSessions(
-    data.sessions,
-    kind,
-    value,
-  );
-
   const selectedLecturer =
     kind === "lecturer"
-      ? data.lecturers.find((lecturer) => lecturer.id === value)
+      ? data.lecturers.find(
+          (lecturer) => lecturer.id === value,
+        )
       : undefined;
 
   const selectedCohort =
     kind === "cohort"
-      ? data.cohorts.find((cohort) => cohort.id === value)
+      ? data.cohorts.find(
+          (cohort) => cohort.id === value,
+        )
       : undefined;
 
   const selectedProgram =
     kind === "program"
-      ? data.programs.find((program) => program.id === value)
+      ? data.programs.find(
+          (program) => program.id === value,
+        )
       : undefined;
 
   const title =
     kind === "lecturer"
-      ? selectedLecturer?.name ?? "Lecturer timetable"
+      ? selectedLecturer?.name ??
+        "Lecturer timetable"
       : kind === "cohort"
-        ? selectedCohort?.name ?? "Cohort timetable"
+        ? selectedCohort?.name ??
+          "Cohort timetable"
         : kind === "program"
-          ? selectedProgram?.name ?? "Program timetable"
+          ? selectedProgram?.name ??
+            "Program timetable"
           : kind === "room"
             ? value ?? "Room timetable"
             : "Timetable";
 
+  const initialFilter: TimetableInitialFilter | undefined =
+    kind && value
+      ? {
+          type: kind,
+          value,
+        }
+      : undefined;
+
+  const sessionsToDisplay =
+    savedSolution?.resultingSessions ??
+    data.sessions;
+
   const events = mapSessionsToCalendarEvents(
-    filteredSessions,
+    sessionsToDisplay,
     data.modules,
     data.lecturers,
     data.programs,
@@ -192,27 +248,106 @@ export function StakeholderTimetablePage() {
   );
 
   /*
-   * Only lecturer timetables show unavailable periods.
+   * Prefer an explicit requested-session ID if the
+   * candidate solution has one.
    */
-  const unavailableEvents =
-    kind === "lecturer" && selectedLecturer
-      ? buildUnavailableEvents(
-          lecturerUnavailableSlots(selectedLecturer),
-        )
-      : [];
+  let requestedSessionId =
+    savedSolution?.requestedSessionId ??
+    savedSolution?.requested_session_id ??
+    null;
 
-  const calendarEvents = [
-    ...events,
-    ...unavailableEvents,
-  ];
+  /*
+   * Otherwise identify the requested session from:
+   *
+   * - the requested module
+   * - the saved result day
+   * - the saved result start time
+   *
+   * This makes the stakeholder timetable highlight
+   * the same session as the saved-solution detail page.
+   */
+  if (
+    !requestedSessionId &&
+    savedSolution?.moduleCode &&
+    savedSolution?.result &&
+    savedSolution.resultingSessions
+  ) {
+    const requestedModule = data.modules.find(
+      (module) =>
+        module.code === savedSolution.moduleCode,
+    );
+
+    const requestedDay =
+      savedSolution.result.day
+        ?.trim()
+        .slice(0, 3)
+        .toLowerCase() ?? null;
+
+    const requestedTime = normalizeTimeFromText(
+      savedSolution.result.time,
+    );
+
+    const requestedSession =
+      savedSolution.resultingSessions.find(
+        (session) => {
+          if (
+            requestedModule &&
+            session.moduleId !== requestedModule.id
+          ) {
+            return false;
+          }
+
+          const sessionDay =
+            normalizeDayFromIso(session.start);
+
+          const sessionTime =
+            normalizeTimeFromIso(session.start);
+
+          return (
+            sessionDay === requestedDay &&
+            sessionTime === requestedTime
+          );
+        },
+      );
+
+    requestedSessionId =
+      requestedSession?.id ?? null;
+  }
+
+  const additionalChangeSessionIds = new Set(
+    (savedSolution?.additionalChanges ?? [])
+      .map(
+        (change) =>
+          change.session_id ??
+          change.sessionId,
+      )
+      .filter(
+        (sessionId): sessionId is string =>
+          Boolean(sessionId),
+      ),
+  );
+
+  const additionalChangeModuleCodes = new Set(
+    (savedSolution?.additionalChanges ?? [])
+      .map((change) => change.module_code)
+      .filter(
+        (moduleCode): moduleCode is string =>
+          Boolean(moduleCode),
+      ),
+  );
 
   return (
     <section className="timetable-shell">
-      <Link to={-1 as unknown as string} className="back-link">
+      <Link
+        to={-1 as unknown as string}
+        className="back-link"
+      >
         ← Back
       </Link>
 
-      <h1 className="timetable-title">{title}</h1>
+      <h1 className="timetable-title">
+        {title}
+      </h1>
 
       <p className="step-description">
         {kind === "lecturer" && selectedLecturer
@@ -226,49 +361,32 @@ export function StakeholderTimetablePage() {
                 : "Read-only timetable preview."}
       </p>
 
-      {filteredSessions.length === 0 && (
+      {solutionId && solutionLoading && (
         <p className="step-description">
-          No bookings found for this stakeholder.
+          Loading saved-solution timetable…
         </p>
       )}
 
-      <div className="timetable-calendar">
-        <FullCalendar
-          plugins={[timeGridPlugin]}
-          initialView="timeGridWeek"
-          initialDate="2026-09-21"
-          weekends={false}
-          allDaySlot={false}
-          slotMinTime="08:00:00"
-          slotMaxTime="20:00:00"
-          height="auto"
-          events={calendarEvents}
-          eventContent={(eventInfo) => {
-            const session = eventInfo.event.extendedProps
-              .session as Session | undefined;
-
-            if (!session) {
-              return null;
-            }
-
-            return (
-              <div className="timetable-event">
-                <div className="event-time">
-                  {eventInfo.timeText}
-                </div>
-
-                <div className="event-title">
-                  {eventInfo.event.title}
-                </div>
-
-                <div className="event-title">
-                  ROOM: {session.room ?? "TBC"}
-                </div>
-              </div>
-            );
-          }}
-        />
-      </div>
+      <TimetableView
+        events={events}
+        initialFilter={initialFilter}
+        showFilters={false}
+        showHeader={false}
+        showLegend={false}
+        showWeekHeading
+        showLecturerAvailability
+        readOnly
+        embedded
+        requestedSessionId={requestedSessionId}
+        requestedModuleCode={savedSolution?.moduleCode}
+        additionalChangeSessionIds={
+          additionalChangeSessionIds
+        }
+        additionalChangeModuleCodes={
+          additionalChangeModuleCodes
+        }
+        showSolutionLegend={Boolean(savedSolution)}
+      />
     </section>
   );
 }

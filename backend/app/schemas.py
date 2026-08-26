@@ -1,5 +1,49 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
+from enum import Enum
+from typing import Literal
+from pydantic import BaseModel
+
+
+class TemporaryConstraintDeactivation(BaseModel):
+    constraint_id: str
+
+    instance_type: Literal[
+        "lecturer",
+        "cohort",
+        "session",
+        "room",
+    ]
+
+    instance_id: str
+
+    day: str | None = None
+
+
+class ChangeMode(str, Enum):
+    KEEP = "keep"
+    SPECIFIC = "specific"
+    FIND = "find"
+
+
+class RescheduleRequestIn(BaseModel):
+    session_id: str
+
+    time_mode: ChangeMode
+    requested_start: str | None = None
+
+    room_mode: ChangeMode
+    requested_room_id: str | None = None
+
+    lecturer_mode: ChangeMode
+    requested_lecturer_id: str | None = None
+
+    temporarily_deactivated_constraints: list[
+        TemporaryConstraintDeactivation
+    ] = Field(default_factory=list)
+
+    max_additional_changes: int | None = None
+
 
 # TODO: 1 START Add these (reuse pattern from InstanceOut, but scoped so the frontend can group by lecturer/cohort):
 class SessionConstraintOut(BaseModel):
@@ -190,3 +234,29 @@ class ProgramOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class CandidateSolutionCreate(BaseModel):
+    id: str
+    name: str | None = None
+    status: str = "saved"
+
+    request_id: str
+    request_created_at: datetime
+
+    requested_session_id: str
+    requested_module_id: str | None = None
+    request_type: str
+
+    request: dict
+
+    additional_changes: list[dict] = Field(default_factory=list)
+    affected_stakeholders: list[dict] = Field(default_factory=list)
+    stakeholder_impacts: list[dict] = Field(default_factory=list)
+
+    objectives: list[dict] | None = None
+    constraints: list[dict] = Field(default_factory=list)
+    resulting_timetable: list[dict] = Field(default_factory=list)
+
+    solve_settings: dict | None = None
+    solver_metadata: dict | None = None
+

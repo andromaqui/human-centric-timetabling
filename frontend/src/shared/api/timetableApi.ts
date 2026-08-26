@@ -27,6 +27,12 @@ export interface ApiLecturer {
   name: string;
 }
 
+export interface ApiLecturerUnavailability {
+  id: number;
+  day: string;
+  hour: number;
+}
+
 export interface ApiCohort {
   id: string;
   name: string;
@@ -56,6 +62,12 @@ export function getModules() {
 
 export function getLecturers() {
   return api.get<ApiLecturer[]>("/lecturers/");
+}
+
+export function getLecturerUnavailability(lecturerId: string) {
+  return api.get<ApiLecturerUnavailability[]>(
+    `/lecturers/${encodeURIComponent(lecturerId)}/unavailability`
+  );
 }
 
 export function getCohorts() {
