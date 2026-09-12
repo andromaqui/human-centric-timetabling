@@ -1,0 +1,609 @@
+.timetable-shell {
+  width: 100%;
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 32px;
+  box-sizing: border-box;
+}
+
+.timetable-header {
+  margin-bottom: 24px;
+}
+
+.timetable-eyebrow {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.timetable-title {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.2;
+  font-weight: 750;
+  color: #0f172a;
+}
+
+.timetable-loading,
+.timetable-error {
+  margin-top: 24px;
+  padding: 16px 18px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.timetable-loading {
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.timetable-error {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+/* =========================================
+   Legend
+========================================= */
+
+.timetable-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-bottom: 20px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.tag-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tag-lecturer .tag-dot {
+  background: #7c3aed;
+}
+
+.tag-room .tag-dot {
+  background: #2563eb;
+}
+
+.tag-cohort .tag-dot {
+  background: #059669;
+}
+
+/* Unavailable legend */
+
+.unavailable-legend-item {
+  color: #b91c1c;
+}
+
+.unavailable-legend-box {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: rgba(239, 68, 68, 0.22);
+  border: 1px solid rgba(220, 38, 38, 0.4);
+}
+
+/* =========================================
+   Filters
+========================================= */
+
+.timetable-calendar-filters {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.timetable-filter-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.timetable-filter-heading
+  > span:first-child {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.timetable-filter-result-count {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.timetable-filter-controls {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.timetable-filter-radio-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timetable-filter-radio {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.timetable-filter-radio:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.timetable-filter-radio.is-selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  box-shadow: 0 0 0 1px #2563eb;
+}
+
+.timetable-filter-radio input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.timetable-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 230px;
+}
+
+.timetable-filter-field > span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+  text-transform: capitalize;
+}
+
+.timetable-filter-field select {
+  width: 100%;
+  height: 40px;
+  padding: 0 34px 0 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #0f172a;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+}
+
+.timetable-filter-field
+  select:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px
+    rgba(37, 99, 235, 0.12);
+}
+
+/* Lecturer availability helper */
+
+.lecturer-availability-status {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.lecturer-availability-status strong {
+  color: #334155;
+}
+
+.lecturer-availability-error {
+  color: #b91c1c;
+}
+
+/* =========================================
+   Week heading
+========================================= */
+
+.timetable-week-heading {
+  margin-bottom: 16px;
+  font-size: 20px;
+  font-weight: 700;
+  color: #475569;
+}
+
+/* =========================================
+   Calendar container
+========================================= */
+
+.timetable-calendar {
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+/* =========================================
+   FullCalendar
+========================================= */
+
+.timetable-calendar .fc {
+  font-family: inherit;
+  color: #0f172a;
+}
+
+.timetable-calendar
+  .fc-theme-standard td,
+.timetable-calendar
+  .fc-theme-standard th {
+  border-color: #e2e8f0;
+}
+
+.timetable-calendar
+  .fc-scrollgrid {
+  border: none;
+}
+
+.timetable-calendar
+  .fc-col-header-cell {
+  background: #f8fafc;
+}
+
+.timetable-calendar
+  .fc-col-header-cell-cushion {
+  padding: 12px 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.timetable-calendar
+  .fc-timegrid-slot-label-cushion {
+  padding: 0 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.timetable-calendar
+  .fc-timegrid-slot {
+  height: 38px;
+}
+
+.timetable-calendar .fc-event {
+  border: none;
+  border-radius: 7px;
+  background: #e0e7ff;
+  color: #1e1b4b;
+  cursor: pointer;
+  overflow: visible;
+}
+
+.timetable-calendar
+  .fc-event-main {
+  padding: 0;
+  color: inherit;
+}
+
+.timetable-calendar
+  .fc-timegrid-event-harness {
+  margin-right: 3px;
+}
+
+/* =========================================
+   Lecturer unavailable background slots
+========================================= */
+
+/*
+ * FullCalendar renders display:"background"
+ * events inside .fc-bg-event.
+ *
+ * This gives selected lecturer unavailable
+ * hours a translucent red background.
+ */
+.timetable-calendar
+  .fc-bg-event.lecturer-unavailable-slot {
+  background: rgba(
+    239,
+    68,
+    68,
+    0.22
+  ) !important;
+  opacity: 1 !important;
+}
+
+/*
+ * Slight border effect so consecutive
+ * unavailable slots are easier to see.
+ */
+.timetable-calendar
+  .lecturer-unavailable-slot {
+  box-shadow:
+    inset 0 1px 0
+      rgba(220, 38, 38, 0.18),
+    inset 0 -1px 0
+      rgba(220, 38, 38, 0.18);
+}
+
+/* =========================================
+   Calendar events
+========================================= */
+
+.timetable-event {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 6px 7px;
+  border-radius: 7px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.timetable-event:hover {
+  filter: brightness(0.97);
+}
+
+.timetable-event.is-open {
+  outline: 2px solid
+    rgba(79, 70, 229, 0.35);
+}
+
+.event-time {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  opacity: 0.78;
+}
+
+.event-title {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+/* =========================================
+   Popover
+========================================= */
+
+.event-popover {
+  position: fixed;
+  z-index: 9999;
+  width: 270px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow:
+    0 18px 40px
+      rgba(15, 23, 42, 0.16),
+    0 4px 12px
+      rgba(15, 23, 42, 0.08);
+}
+
+.event-popover .event-time {
+  color: #64748b;
+}
+
+.event-popover .event-title {
+  margin-top: 3px;
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.event-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 15px;
+  padding-top: 14px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.tag-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.tag-row .tag-dot {
+  margin-top: 5px;
+}
+
+.popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.popover-reschedule-button {
+  appearance: none;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 14px;
+  background: #2563eb;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  transition:
+    background 0.15s ease,
+    transform 0.15s ease;
+}
+
+.popover-reschedule-button:hover {
+  background: #1d4ed8;
+}
+
+.popover-reschedule-button:active {
+  transform: translateY(1px);
+}
+
+/* =========================================
+   Responsive
+========================================= */
+
+@media (max-width: 800px) {
+  .timetable-shell {
+    padding: 20px 14px;
+  }
+
+  .timetable-title {
+    font-size: 26px;
+  }
+
+  .timetable-filter-heading {
+    align-items: flex-start;
+  }
+
+  .timetable-filter-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .timetable-filter-radio-list {
+    width: 100%;
+  }
+
+  .timetable-filter-radio {
+    flex:
+      1 1
+      calc(50% - 8px);
+  }
+
+  .timetable-filter-field {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .timetable-calendar {
+    overflow-x: auto;
+  }
+
+  .timetable-calendar .fc {
+    min-width: 760px;
+  }
+}
+
+/* =========================================
+   Shared / embedded timetable
+========================================= */
+
+.timetable-shell-embedded {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Saved-solution highlighting. The normal timetable remains unchanged. */
+timetable-calendar
+  .fc-event:has(.timetable-event-requested) {
+  background: #dcfce7;
+  color: #166534;
+  box-shadow: inset 3px 0 0 #22c55e;
+}
+
+.timetable-calendar
+  .fc-event:has(.timetable-event-additional) {
+  background: #ffedd5;
+  color: #7c2d12;
+  box-shadow: inset 3px 0 0 #d97706;
+}
+
+/* Requested move */
+.timetable-event-requested {
+  background: #dcfce7;
+  color: #166534;
+  box-shadow: inset 3px 0 0 #22c55e;
+}
+
+/* Additional solver-caused move */
+.timetable-event-additional {
+  background: #ffedd5;
+  color: #9a3412;
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+
+.timetable-solution-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 14px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.timetable-solution-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.timetable-solution-key {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.timetable-solution-key.requested {
+  background: #22c55e;
+}
+
+.timetable-solution-key.additional {
+  background: #f59e0b;
+}
+
+.timetable-solution-key.unchanged {
+  background: #94a3b8;
+}
