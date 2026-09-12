@@ -17,9 +17,11 @@ export type HistoricalImpact = {
   id: string;
 
   semester_id: string;
+  semester_name: string;
 
   stakeholder_type: HistoricalStakeholderType;
   stakeholder_id: string;
+  stakeholder_name: string;
 
   constraint_id: string;
   impact_type: HistoricalImpactType;

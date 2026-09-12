@@ -26,11 +26,16 @@ export function mapApiModuleToModule(m: ApiModule): Module {
     id: m.id,
     code: m.code,
     title: m.title,
+    requiredCapacity: m.required_capacity ?? undefined,
+    requiredEquipment: m.required_equipment
+      ? [m.required_equipment]
+      : [],
   };
 }
 
 export function mapApiCohortToCohort(c: ApiCohort): Cohort {
   return {
+    id: c.id,
     id: c.id,
     name: c.name,
     programId: c.program_id,

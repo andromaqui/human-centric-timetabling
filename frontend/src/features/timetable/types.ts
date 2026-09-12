@@ -19,6 +19,8 @@ export interface Module {
   id: string;
   code: string;
   title: string;
+  requiredCapacity?: number;
+  requiredEquipment?: string[];
 }
 
 export interface Room {

@@ -1,29 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Calendar, Clock, MapPin, User, ExternalLink } from "lucide-react";
+import { Clock, MapPin, User, ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
 import { MiniTimetablePreview } from "../components/MiniTimetablePreview";
+import { InteractiveRepair } from "../components/InteractiveRepair.tsx";
 import { ObjectivesPanel } from "../components/objectives/ObjectivesPanel";
 import { ConstraintsOverviewPanel } from "../components/constraints/ConstraintsOverviewPanel";
-import {
-  Step4Solution,
-  type TemporaryConstraintDeactivation,
-} from "../components/solution/Step4Solution";
-import {
-  sessionToSlotIds,
-  getBusySlots,
-} from "../data/timetableData";
-
+import { Step4Solution, type TemporaryConstraintDeactivation, } from "../components/solution/Step4Solution.tsx";
+import { sessionToSlotIds, getBusySlots, } from "../data/timetableData";
 import { useTimetableData } from "../hooks/useTimetableData";
 import { api } from "../../../shared/api/client";
-import type {
-  Cohort,
-  Lecturer,
-  Program,
-  Session,
-  Objective,
-  ObjectiveStakeholder,
-} from "../types";
+import type {Cohort, Lecturer, Program, Session, Objective, ObjectiveStakeholder,} from "../types";
 import "./ReschedulePage.css";
+import { RoomSuitability } from "../components/RoomSuitability";
 
 function formatViolation(v: Violation): string {
   switch (v.type) {
@@ -141,6 +129,16 @@ function buildTimetableLocalStart(
   // Do NOT use toISOString() here, because that converts the selected
   // local time to UTC and can shift (for example) 12:00 to 10:00.
   return `${year}-${month}-${date}T${hour}:${minute}:00`;
+}
+
+function formatTimetableDateTime(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+
+  return `${year}-${month}-${day}T${hour}:${minute}:00`;
 }
 
 async function fetchRelaxation(
@@ -422,6 +420,15 @@ export function ReschedulePage() {
   const [solverResult, setSolverResult] = useState<RescheduleResponse | null>(null);
   const [solverLoading, setSolverLoading] = useState(false);
   const [solverError, setSolverError] = useState<string | null>(null);
+
+  const [
+    showAnalyticalExploration,
+    setShowAnalyticalExploration,
+  ] = useState(false);
+  const [
+    analyticalExplorationOpen,
+    setAnalyticalExplorationOpen,
+  ] = useState(true);
   const [
     appliedTemporaryDeactivations,
     setAppliedTemporaryDeactivations,
@@ -537,6 +544,17 @@ export function ReschedulePage() {
     );
   }, [data, selectedEvent]);
 
+  const selectedRoomData = useMemo(() => {
+  if (!data || !selectedEvent) return undefined;
+
+  const roomName =
+    selectedRoom ?? selectedEvent.session.room;
+
+  return data.rooms.find(
+    (room) => room.name === roomName,
+  );
+  }, [data, selectedEvent, selectedRoom]);
+
   function getSessionLabel(sessionId: string): string {
     if (!data) return sessionId;
     const session = data.sessions.find((s) => s.id === sessionId);
@@ -595,9 +613,7 @@ export function ReschedulePage() {
     }
   }
 
-  const [constraintDefinitions, setConstraintDefinitions] = useState<
-    ConstraintDefinition[]
-  >([]);
+  const [constraintDefinitions, setConstraintDefinitions] = useState<ConstraintDefinition[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -970,7 +986,11 @@ export function ReschedulePage() {
     if (selectedDay && selectedTime) {
       const dayCode = selectedDay.slice(0, 3).toLowerCase();
       const hour = parseInt(selectedTime.split(":")[0], 10);
-      const duration = 2;
+      const start = new Date(selectedEvent.session.start);
+      const end = new Date(selectedEvent.session.end);
+      const duration =
+  (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+
       return Array.from(
         { length: duration },
         (_, i) => `${dayCode}-${String(hour + i).padStart(2, "0")}`,
@@ -979,10 +999,98 @@ export function ReschedulePage() {
     return [];
   }, [selectedDay, selectedTime]);
 
+
   const currentSlotIds = useMemo(() => {
     if (!selectedEvent) return [];
     return sessionToSlotIds(selectedEvent.session);
   }, [selectedEvent]);
+
+  const repairSessions = useMemo(() => {
+  if (!selectedEvent) {
+    return data?.sessions ?? [];
+  }
+
+  // We need a concrete requested day/time.
+  if (!selectedDay || !selectedTime) {
+    return data?.sessions ?? [];
+  }
+
+  const originalSession = selectedEvent.session;
+
+  const originalStart = new Date(originalSession.start);
+  const originalEnd = new Date(originalSession.end);
+
+  const durationMs =
+    originalEnd.getTime() - originalStart.getTime();
+
+  const dayIndex: Record<string, number> = {
+    Monday: 1,
+    Tuesday: 2,
+    Wednesday: 3,
+    Thursday: 4,
+    Friday: 5,
+  };
+
+  const targetDayIndex = dayIndex[selectedDay];
+
+  if (targetDayIndex == null) {
+    return data?.sessions ?? [];
+  }
+
+  /*
+   * Find Monday of the same week as the
+   * original session.
+   */
+  const targetStart = new Date(originalStart);
+
+  const currentDay = originalStart.getDay();
+
+  targetStart.setDate(
+    originalStart.getDate() +
+      (targetDayIndex - currentDay),
+  );
+
+  const [hours, minutes] = selectedTime
+    .split(":")
+    .map(Number);
+
+  targetStart.setHours(
+    hours,
+    minutes,
+    0,
+    0,
+  );
+
+  const targetEnd = new Date(
+    targetStart.getTime() + durationMs,
+  );
+
+  return (data?.sessions ?? []).map((session) => {
+    if (session.id !== originalSession.id) {
+      return session;
+    }
+
+    return {
+      ...session,
+
+      start: formatTimetableDateTime(targetStart),
+      end: formatTimetableDateTime(targetEnd),
+
+      // For now we're keeping the existing room.
+      // Later this can use the requested room.
+      room: selectedRoom
+        ? getRoomName(selectedRoom)
+        : session.room,
+    };
+  });
+}, [
+  data?.sessions,
+  selectedEvent,
+  selectedDay,
+  selectedTime,
+  selectedRoom,
+  getRoomName,
+]);
 
   // The slot every violation in Step 4's diagnostics is checked against.
   // Case A: the concrete request's target time (falls back to the session's
@@ -1293,9 +1401,7 @@ export function ReschedulePage() {
     }
   }
 
-  async function runRescheduleWithRelaxations(
-    temporarilyDeactivatedConstraints: TemporaryConstraintDeactivation[],
-  ) {
+  async function runRescheduleWithRelaxations(temporarilyDeactivatedConstraints: TemporaryConstraintDeactivation[],) {
     if (!selectedEvent) return;
 
     setSolverLoading(true);
@@ -2096,36 +2202,39 @@ export function ReschedulePage() {
 
   return (
     <section className="reschedule-page">
-      <div className="reschedule-header">
-        <h1>
-          Reschedule class - {selectedModule?.code ?? "Unknown module"}
-        </h1>
-
-        <div className="reschedule-meta">
-          <div className="meta-item">
-            <Calendar size={18} />
-            <span>{selectedModule?.title ?? "Untitled class"}</span>
-          </div>
-
-          <div className="meta-item">
-            <MapPin size={18} />
-            <span>{selectedEvent!.session.room ?? "Room TBC"}</span>
-          </div>
-
-          <div className="meta-item">
-            <Clock size={18} />
-            <span>{selectedEventDayTime ?? "Time TBC"}</span>
-          </div>
-
-          <div className="meta-item">
-            <User size={18} />
-            <span>{selectedEvent!.lecturer?.name ?? "Unassigned"}</span>
-          </div>
-        </div>
-      </div>
-
       <div className="reschedule-shell">
         <aside className="reschedule-sidebar">
+          <div className="reschedule-sidebar-context">
+            <div className="reschedule-sidebar-eyebrow">Rescheduling</div>
+
+            <div className="reschedule-sidebar-code">
+              {selectedModule?.code ?? "Unknown module"}
+            </div>
+
+            <div className="reschedule-sidebar-title">
+              {selectedModule?.title ?? "Untitled class"}
+            </div>
+
+            <div className="reschedule-sidebar-details">
+              <div>
+                <Clock size={14} />
+                <span>{selectedEventDayTime ?? "Time TBC"}</span>
+              </div>
+
+              <div>
+                <MapPin size={14} />
+                <span>{selectedEvent!.session.room ?? "Room TBC"}</span>
+              </div>
+
+              <div>
+                <User size={14} />
+                <span>{selectedEvent!.lecturer?.name ?? "Unassigned"}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="reschedule-sidebar-divider" />
+
           {[1, 2, 3, 4].map((item) => {
             const isPrioritiesStep = item === 3;
             const notApplicable = isPrioritiesStep && !objectivesApplicable;
@@ -2388,13 +2497,16 @@ export function ReschedulePage() {
                     </div>
 
                     <div className="impact-group">
-                      <div className="impact-label">Rooms</div>
-                      <div className="impact-chips">
-                        <span className="impact-chip">
-                          {selectedRoom ?? selectedEvent!.session.room ?? "Room TBC"}
-                        </span>
-                      </div>
-                    </div>
+                          <div className="impact-label">Rooms</div>
+
+                          <div className="impact-chips">
+                            <span className="impact-chip">
+                              {selectedRoom ??
+                                selectedEvent!.session.room ??
+                                "Room TBC"}
+                            </span>
+                          </div>
+                        </div>
 
                     <div className="schedule-preview-block">
                       <button
@@ -2473,6 +2585,20 @@ export function ReschedulePage() {
                                   </div>
                                 );
                               })}
+
+                            {(changeType === "room" || changeType === "both") &&
+                                    selectedRoomData &&
+                                    selectedModule && (
+                                      <div className="mini-schedule-card">
+                                        <RoomSuitability
+                                          roomName={selectedRoomData.name}
+                                          roomCapacity={selectedRoomData.capacity}
+                                          roomEquipment={selectedRoomData.equipment ?? []}
+                                          studentCount={selectedModule.requiredCapacity}
+                                          requiredEquipment={selectedModule.requiredEquipment ?? []}
+                                        />
+                                      </div>
+                                    )}
                           </div>
                         </div>
                       )}
@@ -2517,6 +2643,7 @@ export function ReschedulePage() {
           )}
 
           {step === 4 && (
+              <>
             <Step4Solution
               solverLoading={solverLoading}
               solverError={solverError}
@@ -2529,6 +2656,35 @@ export function ReschedulePage() {
               selectedEventRoom={selectedEvent?.session.room}
               selectedEventLecturerName={selectedEvent?.lecturer?.name}
               originalModes={originalModes}
+              requestedTimeLabel={
+                          originalModes?.time === "find"
+                            ? "Any suitable time"
+                            : selectedDay && selectedTime
+                              ? `${selectedDay} ${selectedTime}`
+                              : "Keep current time"
+                        }
+
+                        requestedRoomLabel={
+                          originalModes?.room === "find"
+                            ? "Any suitable room"
+                            : selectedRoom ?? "Keep current room"
+                        }
+
+                        requestedLecturerLabel={
+                          originalModes?.lecturer === "find"
+                            ? "Any suitable lecturer"
+                            : selectedLecturer
+                              ? getLecturerName(selectedLecturer)
+                              : "Keep current lecturer"
+                        }
+
+                        rescheduleScopeLabel={
+                          rescheduleScope === "up-to-2"
+                            ? "Up to 2 other classes may be moved"
+                            : rescheduleScope === "up-to-3"
+                              ? "Up to 3 other classes may be moved"
+                              : "No other classes may be moved"
+                        }
               getRoomName={getRoomName}
               getLecturerName={getLecturerName}
               formatViolationNice={formatViolationNice}
@@ -2560,6 +2716,109 @@ export function ReschedulePage() {
               onFindRearrangements={runRescheduleWithAdditionalChanges}
               appliedTemporaryDeactivations={appliedTemporaryDeactivations}
             />
+
+            {solverResult?.status === "infeasible" && (
+              <section
+                aria-labelledby="analytical-exploration-heading"
+                style={{
+                  marginTop: "20px",
+                  border: "1px solid #dbe3ef",
+                  borderRadius: "12px",
+                  background: "#f8fafc",
+                  overflow: "hidden",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAnalyticalExplorationOpen((open) => !open)
+                  }
+                  aria-expanded={analyticalExplorationOpen}
+                  aria-controls="analytical-exploration-content"
+                  style={{
+                    width: "100%",
+                    padding: "18px 20px",
+                    border: 0,
+                    background: "transparent",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    display: "flex",
+                    alignItems: "flex-start",
+                    justifyContent: "space-between",
+                    gap: "20px",
+                  }}
+                >
+                  <div style={{ maxWidth: "720px" }}>
+                    <div
+                      style={{
+                        marginBottom: "5px",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        color: "#475569",
+                      }}
+                    >
+                      Analytical exploration
+                    </div>
+
+                    <h3
+                      id="analytical-exploration-heading"
+                      style={{
+                        margin: 0,
+                        fontSize: "18px",
+                      }}
+                    >
+                      Investigate the repair path
+                    </h3>
+                  </div>
+
+                  {analyticalExplorationOpen ? (
+                    <ChevronUp size={20} aria-hidden="true" />
+                  ) : (
+                    <ChevronDown size={20} aria-hidden="true" />
+                  )}
+                </button>
+
+                {analyticalExplorationOpen && (
+                  <div
+                    id="analytical-exploration-content"
+                    style={{
+                      padding: "0 20px 18px",
+                      display: "flex",
+                      alignItems: "flex-end",
+                      justifyContent: "space-between",
+                      gap: "20px",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <p
+                      style={{
+                        margin: 0,
+                        maxWidth: "720px",
+                        color: "#64748b",
+                        lineHeight: 1.55,
+                      }}
+                    >
+                      Explore why this request remains infeasible. Move
+                      contributing classes or relax constraints and observe
+                      which conflicts each decision resolves or introduces.
+                    </p>
+
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() =>
+                        setShowAnalyticalExploration(true)
+                      }
+                    >
+                      Open analytical exploration
+                    </button>
+                  </div>
+                )}
+              </section>
+            )}
+             </>
           )}
 
           <div className="reschedule-actions">
@@ -2595,6 +2854,138 @@ export function ReschedulePage() {
           </div>
         </main>
       </div>
+
+      {showAnalyticalExploration &&
+        solverResult?.status === "infeasible" && (
+          <div
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
+                setShowAnalyticalExploration(false);
+              }
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 1000,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "24px",
+              background: "rgba(15, 23, 42, 0.58)",
+            }}
+          >
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="analytical-exploration-modal-title"
+              style={{
+                width: "min(95vw, 1600px)",
+                height: "92vh",
+                display: "flex",
+                flexDirection: "column",
+                overflow: "hidden",
+                borderRadius: "16px",
+                background: "#ffffff",
+                boxShadow:
+                  "0 24px 80px rgba(15, 23, 42, 0.28)",
+              }}
+            >
+              <header
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  gap: "20px",
+                  padding: "18px 22px",
+                  borderBottom: "1px solid #e2e8f0",
+                  background: "#ffffff",
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      marginBottom: "4px",
+                      fontSize: "11px",
+                      fontWeight: 700,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                      color: "#475569",
+                    }}
+                  >
+                    Analytical exploration
+                  </div>
+
+                  <h2
+                    id="analytical-exploration-modal-title"
+                    style={{
+                      margin: "0 0 5px",
+                      fontSize: "21px",
+                    }}
+                  >
+                    Explore repair paths
+                  </h2>
+
+                  <p
+                    style={{
+                      margin: 0,
+                      color: "#64748b",
+                    }}
+                  >
+                    Investigate how repair decisions resolve existing
+                    conflicts or introduce new ones.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  aria-label="Close analytical exploration"
+                  onClick={() =>
+                    setShowAnalyticalExploration(false)
+                  }
+                  style={{
+                    width: "38px",
+                    height: "38px",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "9px",
+                    background: "#ffffff",
+                    fontSize: "24px",
+                    lineHeight: 1,
+                    cursor: "pointer",
+                  }}
+                >
+                  ×
+                </button>
+              </header>
+
+              <div
+                style={{
+                  flex: 1,
+                  overflow: "auto",
+                  padding: "22px",
+                  background: "#f8fafc",
+                }}
+              >
+                <InteractiveRepair
+                  originalSessions={data!.sessions}
+                  workingSessions={repairSessions}
+                  modules={data!.modules}
+                  lecturers={data!.lecturers}
+                  programs={data!.programs}
+                  cohorts={data!.cohorts}
+                  requestedSessionId={selectedEvent.session.id}
+                  shuffleCredit={
+                    rescheduleScope === "up-to-2"
+                      ? 2
+                      : rescheduleScope === "up-to-3"
+                        ? 3
+                        : 0
+                  }
+                />
+              </div>
+            </section>
+          </div>
+        )}
     </section>
   );
 }

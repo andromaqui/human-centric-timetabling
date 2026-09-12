@@ -59,6 +59,32 @@ type TimetableViewProps = {
   additionalChangeModuleCodes?: Iterable<string>;
 
   showSolutionLegend?: boolean;
+
+  /**
+   * When true, additional changed sessions use the same green highlight as
+   * the requested session. Used by InteractiveRepair only.
+   */
+  highlightAdditionalChangesAsRequested?: boolean;
+
+  /**
+   * Interactive-repair-only highlighting.
+   *
+   * If the active repair move introduced a new conflict, the moved class can be
+   * highlighted red on the timetable. Dead-end moves use a stronger red state.
+   */
+  repairProblemSessionId?: string | null;
+  repairProblemSeverity?: "conflict" | "dead-end" | null;
+
+  /**
+   * Interactive-repair current-state highlighting.
+   * Every session in this set is involved in at least one unresolved conflict.
+   */
+  repairProblemSessionIds?: Iterable<string>;
+
+  /**
+   * Optional stronger red highlight for the move that produced a dead end.
+   */
+  repairDeadEndSessionId?: string | null;
 };
 
 const REFERENCE_WEEK: Record<string, string> = {
@@ -85,10 +111,20 @@ function EventCard({
   eventInfo,
   readOnly,
   solutionKind,
+  highlightAdditionalAsRequested,
+  repairProblemSessionId,
+  repairProblemSeverity,
+  repairProblemSessionIds,
+  repairDeadEndSessionId,
 }: {
   eventInfo: EventContentArg;
   readOnly: boolean;
   solutionKind: "requested" | "additional" | "unchanged";
+  highlightAdditionalAsRequested: boolean;
+  repairProblemSessionId?: string | null;
+  repairProblemSeverity?: "conflict" | "dead-end" | null;
+  repairProblemSessionIds?: Set<string>;
+  repairDeadEndSessionId?: string | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -115,6 +151,33 @@ function EventCard({
   };
 
   const session = props.session;
+
+  const eventSessionId =
+    session?.id ?? eventInfo.event.id;
+
+  const isRepairProblemSession =
+    (
+      !!repairProblemSessionId &&
+      eventSessionId === repairProblemSessionId
+    ) ||
+    (
+      repairProblemSessionIds?.has(
+        eventSessionId,
+      ) ??
+      false
+    );
+
+  const isRepairDeadEndSession =
+    (
+      !!repairDeadEndSessionId &&
+      eventSessionId === repairDeadEndSessionId
+    ) ||
+    (
+      !!repairProblemSessionId &&
+      repairProblemSeverity === "dead-end" &&
+      eventSessionId === repairProblemSessionId
+    );
+
   const lecturer = props.lecturer;
   const cohorts = props.cohorts ?? [];
 
@@ -219,11 +282,21 @@ function EventCard({
       className={[
         "timetable-event",
         isOpen ? "is-open" : "",
-        solutionKind === "requested"
-          ? "timetable-event-requested"
-          : solutionKind === "additional"
-            ? "timetable-event-additional"
-            : "",
+
+        isRepairDeadEndSession
+          ? "timetable-event-repair-dead-end"
+
+          : isRepairProblemSession
+            ? "timetable-event-repair-conflict"
+
+            : solutionKind === "requested" ||
+                (solutionKind === "additional" &&
+                  highlightAdditionalAsRequested)
+              ? "timetable-event-requested"
+
+              : solutionKind === "additional"
+                ? "timetable-event-additional"
+                : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -314,7 +387,17 @@ export function TimetableView({
   additionalChangeSessionIds,
   additionalChangeModuleCodes,
   showSolutionLegend = false,
+  highlightAdditionalChangesAsRequested = false,
+  repairProblemSessionId = null,
+  repairProblemSeverity = null,
+  repairProblemSessionIds,
+  repairDeadEndSessionId = null,
 }: TimetableViewProps) {
+  const repairProblemSessionIdSet =
+    stringSet(
+      repairProblemSessionIds,
+    );
+
   const [filterType, setFilterType] =
     useState<TimetableFilterType>(
       initialFilter?.type ?? "all",
@@ -634,6 +717,21 @@ export function TimetableView({
         eventInfo={eventInfo}
         readOnly={readOnly}
         solutionKind={getSolutionKind(eventInfo)}
+        highlightAdditionalAsRequested={
+          highlightAdditionalChangesAsRequested
+        }
+        repairProblemSessionId={
+          repairProblemSessionId
+        }
+        repairProblemSeverity={
+          repairProblemSeverity
+        }
+        repairProblemSessionIds={
+          repairProblemSessionIdSet
+        }
+        repairDeadEndSessionId={
+          repairDeadEndSessionId
+        }
       />
     );
   }

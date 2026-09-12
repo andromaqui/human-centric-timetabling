@@ -1,13 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
-  historicalStakeholderImpacts,
+  fetchHistoricalImpacts,
+  type HistoricalImpact,
   type HistoricalImpactType,
   type HistoricalStakeholderType,
-} from "../data/historicalStakeholderImpact";
+} from "./historicalImpacts";
 
 import { ImpactCellDetails } from "../components/ImpactCellDetails";
 import { ImpactBarChart } from "../components/ImpactBarChart";
+
 import "./HistoricalStakeholderImpactPage.css";
 
 type ImpactOption = {
@@ -18,8 +20,10 @@ type ImpactOption = {
 type HoveredCell = {
   x: number;
   y: number;
+  stakeholderId: string;
   stakeholderName: string;
-  semester: string;
+  semesterId: string;
+  semesterName: string;
 };
 
 const impactOptions: ImpactOption[] = [
@@ -33,16 +37,6 @@ const impactOptions: ImpactOption[] = [
   },
 ];
 
-function getOccurrenceCountForImpact(
-  impact: (typeof historicalStakeholderImpacts)[number]["impacts"][number],
-) {
-  if (impact.details.kind === "lunch-break") {
-    return impact.details.changes.length;
-  }
-
-  return 1;
-}
-
 export function HistoricalStakeholderImpactPage() {
   const [stakeholderType, setStakeholderType] =
     useState<HistoricalStakeholderType>("lecturer");
@@ -50,82 +44,184 @@ export function HistoricalStakeholderImpactPage() {
   const [impactType, setImpactType] =
     useState<HistoricalImpactType>("lunch-break-reduced");
 
+  const [historicalImpacts, setHistoricalImpacts] = useState<
+    HistoricalImpact[]
+  >([]);
+
+  const [loading, setLoading] = useState(false);
+
+  const [error, setError] = useState<string | null>(null);
+
   const [hoveredCell, setHoveredCell] =
     useState<HoveredCell | null>(null);
 
   /*
-   * Build the matrix rows.
+   * Fetch historical impacts whenever the selected
+   * stakeholder type or impact type changes.
    */
-  const matrixRows = useMemo(() => {
-    return historicalStakeholderImpacts
-      .filter(
-        (stakeholder) =>
-          stakeholder.stakeholderType === stakeholderType,
-      )
-      .map((stakeholder) => {
-        const semesterCounts: Record<string, number> = {};
+  useEffect(() => {
+    async function loadHistoricalImpacts() {
+      try {
+        setLoading(true);
+        setError(null);
 
-        stakeholder.impacts
-          .filter((impact) => impact.impactType === impactType)
-          .forEach((impact) => {
-            const semester = impact.details.semester;
+        const data = await fetchHistoricalImpacts(
+          stakeholderType,
+          impactType,
+        );
 
-            semesterCounts[semester] =
-              (semesterCounts[semester] ?? 0) +
-              getOccurrenceCountForImpact(impact);
-          });
+        console.log(
+          "Historical impacts from backend:",
+          data,
+        );
 
-        return {
-          id: stakeholder.stakeholderId,
-          name: stakeholder.stakeholderName,
-          semesterCounts,
-        };
-      });
-  }, [impactType, stakeholderType]);
+        setHistoricalImpacts(data);
+      } catch (err) {
+        console.error(err);
+
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to load historical impacts",
+        );
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadHistoricalImpacts();
+  }, [stakeholderType, impactType]);
 
   /*
-   * Work out which semesters become columns.
+   * Build one matrix row per stakeholder.
+   *
+   * Each HistoricalImpact record represents one
+   * affected day, therefore every record adds one dot.
+   */
+  const matrixRows = useMemo(() => {
+    const rows = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        semesterCounts: Record<string, number>;
+      }
+    >();
+
+    historicalImpacts.forEach((impact) => {
+      const existing = rows.get(
+        impact.stakeholder_id,
+      );
+
+      if (!existing) {
+        rows.set(impact.stakeholder_id, {
+          id: impact.stakeholder_id,
+          name: impact.stakeholder_name,
+          semesterCounts: {
+            [impact.semester_id]: 1,
+          },
+        });
+
+        return;
+      }
+
+      existing.semesterCounts[
+        impact.semester_id
+      ] =
+        (existing.semesterCounts[
+          impact.semester_id
+        ] ?? 0) + 1;
+    });
+
+    return Array.from(rows.values());
+  }, [historicalImpacts]);
+
+  /*
+   * Build semester columns.
+   *
+   * We keep:
+   * - id for matching database records
+   * - name for display
+   * - firstDate for chronological ordering
    */
   const semesters = useMemo(() => {
-    const semesterDates = new Map<string, number>();
+    const semesterMap = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        firstDate: number;
+      }
+    >();
 
-    historicalStakeholderImpacts
-      .filter(
-        (stakeholder) =>
-          stakeholder.stakeholderType === stakeholderType,
-      )
-      .forEach((stakeholder) => {
-        stakeholder.impacts
-          .filter((impact) => impact.impactType === impactType)
-          .forEach((impact) => {
-            const semester = impact.details.semester;
-            const date = new Date(impact.date).getTime();
+    historicalImpacts.forEach((impact) => {
+      const date = new Date(
+        impact.occurred_on,
+      ).getTime();
 
-            const existing = semesterDates.get(semester);
+      const existing = semesterMap.get(
+        impact.semester_id,
+      );
 
-            if (existing === undefined || date < existing) {
-              semesterDates.set(semester, date);
-            }
-          });
-      });
+      if (
+        !existing ||
+        date < existing.firstDate
+      ) {
+        semesterMap.set(
+          impact.semester_id,
+          {
+            id: impact.semester_id,
+            name: impact.semester_name,
+            firstDate: date,
+          },
+        );
+      }
+    });
 
-    return Array.from(semesterDates.entries())
-      .sort((a, b) => a[1] - b[1])
-      .map(([semester]) => semester);
-  }, [impactType, stakeholderType]);
+    return Array.from(
+      semesterMap.values(),
+    ).sort(
+      (a, b) =>
+        a.firstDate - b.firstDate,
+    );
+  }, [historicalImpacts]);
+
+  /*
+   * When a matrix cell is hovered, select the impacts
+   * belonging specifically to that stakeholder +
+   * semester.
+   */
+  const hoveredCellImpacts = useMemo(() => {
+    if (!hoveredCell) {
+      return [];
+    }
+
+    return historicalImpacts.filter(
+      (impact) =>
+        impact.stakeholder_id ===
+          hoveredCell.stakeholderId &&
+        impact.semester_id ===
+          hoveredCell.semesterId,
+    );
+  }, [historicalImpacts, hoveredCell]);
 
   function showPopover(
     event: React.MouseEvent<HTMLTableCellElement>,
+    stakeholderId: string,
     stakeholderName: string,
-    semester: string,
+    semesterId: string,
+    semesterName: string,
   ) {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect =
+      event.currentTarget.getBoundingClientRect();
 
     setHoveredCell({
       x: rect.left + rect.width / 2,
       y: rect.top,
+      stakeholderId,
       stakeholderName,
-      semester,
+      semesterId,
+      semesterName,
     });
   }
 
@@ -201,84 +297,122 @@ export function HistoricalStakeholderImpactPage() {
         </div>
       </div>
 
-      <div className="impact-matrix-wrapper">
-        <table className="impact-matrix">
-          <thead>
-            <tr>
-              <th className="impact-matrix-name-column">
-                {stakeholderType === "lecturer"
-                  ? "Lecturer"
-                  : "Cohort"}
-              </th>
+      {loading && (
+        <p className="impact-matrix-status">
+          Loading historical impacts...
+        </p>
+      )}
 
-              {semesters.map((semester) => (
-                <th key={semester}>
-                  {semester}
-                </th>
-              ))}
-            </tr>
-          </thead>
+      {error && (
+        <p className="impact-matrix-status impact-matrix-error">
+          {error}
+        </p>
+      )}
 
-          <tbody>
-            {matrixRows.map((row) => (
-              <tr key={row.id}>
-                <th className="impact-matrix-person">
-                  {row.name}
-                </th>
+      {!loading && !error && (
+        <>
+          <div className="impact-matrix-wrapper">
+            <table className="impact-matrix">
+              <thead>
+                <tr>
+                  <th className="impact-matrix-name-column">
+                    {stakeholderType === "lecturer"
+                      ? "Lecturer"
+                      : "Cohort"}
+                  </th>
 
-                {semesters.map((semester) => {
-                  const count =
-                    row.semesterCounts[semester] ?? 0;
+                  {semesters.map(
+                    (semester) => (
+                      <th key={semester.id}>
+                        {semester.name}
+                      </th>
+                    ),
+                  )}
+                </tr>
+              </thead>
 
-                  return (
-                    <td
-                      key={`${row.id}-${semester}`}
-                      className={
-                        count > 0
-                          ? "impact-matrix-cell is-populated"
-                          : "impact-matrix-cell"
-                      }
-                      aria-label={`${row.name}, ${semester}: ${count} occurrences`}
-                      onMouseEnter={(event) => {
-                        if (count > 0) {
-                          showPopover(
-                            event,
-                            row.name,
-                            semester,
-                          );
-                        }
-                      }}
-                      onMouseLeave={() =>
-                        setHoveredCell(null)
-                      }
-                    >
-                      {count === 0 ? (
-                        <span className="impact-matrix-empty">
-                          —
-                        </span>
-                      ) : (
-                        <span className="impact-matrix-dots">
-                          {"●".repeat(count)}
-                        </span>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+              <tbody>
+                {matrixRows.map((row) => (
+                  <tr key={row.id}>
+                    <th className="impact-matrix-person">
+                      {row.name}
+                    </th>
 
-      <div className="impact-matrix-legend">
-        <span className="impact-matrix-dots">●</span>
-        <span>one affected day</span>
-      </div>
+                    {semesters.map(
+                      (semester) => {
+                        const count =
+                          row.semesterCounts[
+                            semester.id
+                          ] ?? 0;
 
-      <ImpactBarChart
-          impactType={impactType}
-          stakeholderType={stakeholderType}
-        />
+                        return (
+                          <td
+                            key={`${row.id}-${semester.id}`}
+                            className={
+                              count > 0
+                                ? "impact-matrix-cell is-populated"
+                                : "impact-matrix-cell"
+                            }
+                            aria-label={`${row.name}, ${semester.name}: ${count} occurrences`}
+                            onMouseEnter={(
+                              event,
+                            ) => {
+                              if (count > 0) {
+                                showPopover(
+                                  event,
+                                  row.id,
+                                  row.name,
+                                  semester.id,
+                                  semester.name,
+                                );
+                              }
+                            }}
+                            onMouseLeave={() =>
+                              setHoveredCell(
+                                null,
+                              )
+                            }
+                          >
+                            {count === 0 ? (
+                              <span className="impact-matrix-empty">
+                                —
+                              </span>
+                            ) : (
+                              <span className="impact-matrix-dots">
+                                {"●".repeat(
+                                  count,
+                                )}
+                              </span>
+                            )}
+                          </td>
+                        );
+                      },
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="impact-matrix-legend">
+            <span className="impact-matrix-dots">
+              ●
+            </span>
+
+            <span>
+              one affected day
+            </span>
+          </div>
+
+          <ImpactBarChart
+            impactType={impactType}
+            stakeholderType={
+              stakeholderType
+            }
+            impacts={historicalImpacts}
+          />
+        </>
+      )}
 
       {hoveredCell && (
         <div
@@ -290,8 +424,13 @@ export function HistoricalStakeholderImpactPage() {
         >
           <ImpactCellDetails
             impactType={impactType}
-            semester={hoveredCell.semester}
-            stakeholderName={hoveredCell.stakeholderName}
+            semester={
+              hoveredCell.semesterName
+            }
+            stakeholderName={
+              hoveredCell.stakeholderName
+            }
+            impacts={hoveredCellImpacts}
           />
         </div>
       )}

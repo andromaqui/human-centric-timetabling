@@ -4,7 +4,18 @@ from enum import Enum
 from typing import Literal
 from pydantic import BaseModel
 
+class WorkingSessionMoveIn(BaseModel):
+    session_id: str
+    new_start: datetime
+    new_end: datetime
+    new_room_id: str | None = None
 
+
+class WorkingDayRequestIn(BaseModel):
+    day: str
+    moves: list[WorkingSessionMoveIn] = Field(default_factory=list)
+
+    
 class TemporaryConstraintDeactivation(BaseModel):
     constraint_id: str
 
@@ -225,6 +236,11 @@ class SessionOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class WorkingDayOut(BaseModel):
+    sessions: list[SessionOut]
+    violations: list[dict]
 
 
 class ProgramOut(BaseModel):

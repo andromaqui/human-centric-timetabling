@@ -1,17 +1,31 @@
-import type { HistoricalImpactType } from "../data/historicalStakeholderImpact";
+import type {
+  HistoricalImpact,
+  HistoricalImpactType,
+} from "../pages/historicalImpacts";
+
 import "./ImpactCellDetails.css";
 
 type ImpactCellDetailsProps = {
   impactType: HistoricalImpactType;
   semester: string;
   stakeholderName: string;
+  impacts: HistoricalImpact[];
+};
+
+const dayLabels: Record<string, string> = {
+  mon: "Monday",
+  tue: "Tuesday",
+  wed: "Wednesday",
+  thu: "Thursday",
+  fri: "Friday",
 };
 
 export function ImpactCellDetails({
   impactType,
   semester,
+  impacts,
 }: ImpactCellDetailsProps) {
-  const isLunchBreak =
+  const isLunch =
     impactType === "lunch-break-reduced";
 
   return (
@@ -20,7 +34,7 @@ export function ImpactCellDetails({
         {semester}
       </div>
 
-      {isLunchBreak ? (
+      {isLunch ? (
         <>
           <div className="impact-cell-details-columns lunch-break">
             <span>Day</span>
@@ -28,21 +42,24 @@ export function ImpactCellDetails({
             <span>Lost</span>
           </div>
 
-          <div className="impact-cell-details-row lunch-break">
-            <span>Monday</span>
-            <strong>45 min</strong>
-            <span className="impact-cell-details-impact">
-              −15 min
-            </span>
-          </div>
+          {impacts.map((impact) => (
+            <div
+              key={impact.id}
+              className="impact-cell-details-row lunch-break"
+            >
+              <span>
+                {dayLabels[impact.day] ?? impact.day}
+              </span>
 
-          <div className="impact-cell-details-row lunch-break">
-            <span>Tuesday</span>
-            <strong>30 min</strong>
-            <span className="impact-cell-details-impact">
-              −30 min
-            </span>
-          </div>
+              <strong>
+                {impact.details.received_minutes ?? 0} min
+              </strong>
+
+              <span className="impact-cell-details-impact">
+                −{impact.magnitude_minutes} min
+              </span>
+            </div>
+          ))}
         </>
       ) : (
         <>
@@ -53,25 +70,55 @@ export function ImpactCellDetails({
             <span>Over</span>
           </div>
 
-          <div className="impact-cell-details-row daily-hours">
-            <span>Monday</span>
-            <strong>6 h</strong>
-            <span>4 h</span>
-            <span className="impact-cell-details-impact">
-              +2 h
-            </span>
-          </div>
+          {impacts.map((impact) => {
+            const actualMinutes =
+              impact.details.actual_minutes ?? 0;
 
-          <div className="impact-cell-details-row daily-hours">
-            <span>Tuesday</span>
-            <strong>5 h</strong>
-            <span>4 h</span>
-            <span className="impact-cell-details-impact">
-              +1 h
-            </span>
-          </div>
+            const limitMinutes =
+              impact.details.limit_minutes ?? 0;
+
+            return (
+              <div
+                key={impact.id}
+                className="impact-cell-details-row daily-hours"
+              >
+                <span>
+                  {dayLabels[impact.day] ?? impact.day}
+                </span>
+
+                <strong>
+                  {formatMinutes(actualMinutes)}
+                </strong>
+
+                <span>
+                  {formatMinutes(limitMinutes)}
+                </span>
+
+                <span className="impact-cell-details-impact">
+                  +{formatMinutes(
+                    impact.magnitude_minutes,
+                  )}
+                </span>
+              </div>
+            );
+          })}
         </>
       )}
     </div>
   );
+}
+
+function formatMinutes(minutes: number) {
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+
+  if (hours === 0) {
+    return `${remainder} min`;
+  }
+
+  if (remainder === 0) {
+    return `${hours} h`;
+  }
+
+  return `${hours} h ${remainder} min`;
 }

@@ -22,6 +22,7 @@ export function MiniTimetablePreview({
   unavailableSlots = [],
   fullTimetableLink,
 }: MiniTimetablePreviewProps) {
+
   return (
     <div className="mini-timetable-card">
       <div className="mini-timetable-header">

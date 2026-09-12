@@ -1,3 +1,11 @@
+.interactive-repair {
+  margin-top: 500px;
+}
+
+.interactive-repair-moves-title  {
+  margin-top: 10px;
+}
+
 .timetable-shell {
   width: 100%;
   max-width: 1500px;
@@ -606,4 +614,43 @@ timetable-calendar
 
 .timetable-solution-key.unchanged {
   background: #94a3b8;
+}
+
+/* =========================================
+   Interactive repair outcome highlighting
+========================================= */
+
+/*
+ * A moved class that introduced one or more new conflicts.
+ * Keep this lighter than a true dead end so the timetable communicates
+ * "problematic, but potentially still repairable".
+ */
+.timetable-calendar
+  .fc-event:has(.timetable-event-repair-conflict) {
+  background: #fee2e2 !important;
+  color: #991b1b !important;
+  box-shadow: inset 3px 0 0 #ef4444 !important;
+}
+
+.timetable-event-repair-conflict {
+  background: #fee2e2 !important;
+  color: #991b1b !important;
+  box-shadow: inset 3px 0 0 #ef4444 !important;
+}
+
+/*
+ * A moved class whose resulting repair state is a dead end.
+ * This deliberately uses a stronger red treatment.
+ */
+.timetable-calendar
+  .fc-event:has(.timetable-event-repair-dead-end) {
+  background: #fecaca !important;
+  color: #7f1d1d !important;
+  box-shadow: inset 4px 0 0 #dc2626 !important;
+}
+
+.timetable-event-repair-dead-end {
+  background: #fecaca !important;
+  color: #7f1d1d !important;
+  box-shadow: inset 4px 0 0 #dc2626 !important;
 }

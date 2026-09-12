@@ -2,7 +2,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from . import models
 from .database import engine
-from .routers import constraints, modules, relaxations, sessions, lecturers, cohorts, constraint_instances, rooms, programs, solver, candidate_solutions
+from .routers import (constraints, modules, relaxations, sessions,
+                      lecturers, cohorts, constraint_instances, rooms, programs,
+                      historical_impacts,
+                      solver, candidate_solutions)
 
 app = FastAPI(title="Timetable API")
 
@@ -12,8 +15,8 @@ models.Base.metadata.create_all(bind=engine)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,7 +33,7 @@ app.include_router(rooms.router)
 app.include_router(programs.router)
 app.include_router(solver.router)
 app.include_router(candidate_solutions.router)
-
+app.include_router(historical_impacts.router)
 
 @app.get("/health")
 def health():

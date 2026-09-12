@@ -958,6 +958,9 @@ def solve_reschedule(request: RescheduleRequestIn, db):
     status = solver.Solve(model)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        print("status")
+        print({status})
+
         if request_is_concrete(request):
             (
                 proposed_start,
@@ -1742,6 +1745,367 @@ def diagnose_specific_request(
             for session in overlapping_sessions
         ],
     }
+
+
+
+def diagnose_working_day(db, day: str, working_sessions,):
+    violations = []
+
+    normalized_day = day.lower()
+
+    # Safety: only keep sessions that actually belong to this day
+    day_sessions = [
+        session
+        for session in working_sessions
+        if session.start.strftime("%A").lower() == normalized_day
+    ]
+
+    # --------------------------------------------------------------
+    # 1. Room overlap
+    # --------------------------------------------------------------
+
+    for i in range(len(day_sessions)):
+        for j in range(i + 1, len(day_sessions)):
+            a = day_sessions[i]
+            b = day_sessions[j]
+
+            a_start = datetime_to_slot(a.start)
+            a_end = a_start + get_duration_slots(a)
+
+            b_start = datetime_to_slot(b.start)
+            b_end = b_start + get_duration_slots(b)
+
+            overlaps = (
+                a_start < b_end
+                and b_start < a_end
+            )
+
+            if overlaps and a.room_id == b.room_id:
+                violations.append({
+                    "type": "room_overlap",
+                    "room_id": a.room_id,
+                    "session_ids": [
+                        a.id,
+                        b.id,
+                    ],
+                })
+
+    # --------------------------------------------------------------
+    # 2. Lecturer overlap
+    # --------------------------------------------------------------
+
+    for i in range(len(day_sessions)):
+        for j in range(i + 1, len(day_sessions)):
+            a = day_sessions[i]
+            b = day_sessions[j]
+
+            a_start = datetime_to_slot(a.start)
+            a_end = a_start + get_duration_slots(a)
+
+            b_start = datetime_to_slot(b.start)
+            b_end = b_start + get_duration_slots(b)
+
+            overlaps = (
+                a_start < b_end
+                and b_start < a_end
+            )
+
+            if (
+                overlaps
+                and a.lecturer_id == b.lecturer_id
+            ):
+                violations.append({
+                    "type": "lecturer_overlap",
+                    "lecturer_id": a.lecturer_id,
+                    "session_ids": [
+                        a.id,
+                        b.id,
+                    ],
+                })
+
+    # --------------------------------------------------------------
+    # 3. Lecturer unavailability
+    # --------------------------------------------------------------
+
+    unavailability_rows = get_all_lecturer_unavailability(db)
+    print("\n===== ALL LECTURER UNAVAILABILITY =====")
+
+    for row in unavailability_rows:
+        print(
+            "id:", row.id,
+            "| lecturer_id:", row.lecturer_id,
+            "| day:", row.day,
+            "| hour:", row.hour,
+        )
+
+    print("=======================================\n")
+
+    for session in day_sessions:
+        session_start = datetime_to_slot(session.start)
+        session_end = (
+            session_start
+            + get_duration_slots(session)
+        )
+
+        for row in unavailability_rows:
+            if row.lecturer_id != session.lecturer_id:
+                continue
+
+            if row.day is None:
+                continue
+
+            if not _days_match(
+                row.day,
+                normalized_day,
+            ):
+                continue
+
+            blocked_start = day_time_to_slot(
+                row.day,
+                f"{row.hour:02d}:00",
+            )
+
+            blocked_end = blocked_start + 1
+
+            overlaps = (
+                session_start < blocked_end
+                and blocked_start < session_end
+            )
+
+            if overlaps:
+                violations.append({
+                    "type": "lecturer_unavailable",
+                    "lecturer_id": session.lecturer_id,
+                    "session_ids": [
+                        session.id,
+                    ],
+                    "day": normalized_day,
+                    "hour": row.hour,
+                })
+
+            if overlaps:
+                print("\n===== UNAVAILABILITY VIOLATION =====")
+                print("session id:", session.id)
+                print("module id:", session.module_id)
+                print("session lecturer_id:", session.lecturer_id)
+                print("session start:", session.start)
+                print("session end:", session.end)
+
+                print("row lecturer_id:", row.lecturer_id)
+                print("row day:", row.day)
+                print("row hour:", row.hour)
+
+                print("session_start slot:", session_start)
+                print("session_end slot:", session_end)
+                print("blocked_start slot:", blocked_start)
+                print("blocked_end slot:", blocked_end)
+                print("overlaps:", overlaps)
+                print("====================================\n")
+
+                violations.append({
+                    "type": "lecturer_unavailable",
+                    "lecturer_id": session.lecturer_id,
+                    "session_ids": [
+                        session.id,
+                    ],
+                    "day": normalized_day,
+                    "hour": row.hour,
+                })
+
+
+
+    # --------------------------------------------------------------
+    # 4. Lecturer daily hours
+    # --------------------------------------------------------------
+
+    lecturer_constraints = (
+        get_active_lecturer_daily_hour_constraints(db)
+    )
+
+    lecturer_ids = {
+        session.lecturer_id
+        for session in day_sessions
+    }
+
+    for lecturer_id in lecturer_ids:
+
+        active = any(
+            constraint.lecturer_id == lecturer_id
+            and constraint.day is not None
+            and _days_match(
+                constraint.day,
+                normalized_day,
+            )
+            for constraint in lecturer_constraints
+        )
+
+        if not active:
+            continue
+
+        lecturer_sessions = [
+            session
+            for session in day_sessions
+            if session.lecturer_id == lecturer_id
+        ]
+
+        total_hours = sum(
+            get_duration_slots(session)
+            for session in lecturer_sessions
+        )
+
+        if total_hours > LECTURER_MAX_HOURS_PER_DAY:
+            violations.append({
+                "type": "lecturer_daily_hours",
+                "lecturer_id": lecturer_id,
+                "day": normalized_day,
+                "total_hours": total_hours,
+                "limit": LECTURER_MAX_HOURS_PER_DAY,
+                "session_ids": [
+                    session.id
+                    for session in lecturer_sessions
+                ],
+            })
+
+    # --------------------------------------------------------------
+    # 5. Cohort daily hours
+    # --------------------------------------------------------------
+
+    cohort_constraints = (
+        get_active_cohort_daily_hour_constraints(db)
+    )
+
+    cohort_ids = {
+        cohort.id
+        for session in day_sessions
+        for cohort in session.cohorts
+    }
+
+    for cohort_id in cohort_ids:
+
+        active = any(
+            constraint.cohort_id == cohort_id
+            and constraint.day is not None
+            and _days_match(
+                constraint.day,
+                normalized_day,
+            )
+            for constraint in cohort_constraints
+        )
+
+        if not active:
+            continue
+
+        cohort_sessions = [
+            session
+            for session in day_sessions
+            if any(
+                cohort.id == cohort_id
+                for cohort in session.cohorts
+            )
+        ]
+
+        total_hours = sum(
+            get_duration_slots(session)
+            for session in cohort_sessions
+        )
+
+        if total_hours > COHORT_MAX_HOURS_PER_DAY:
+            violations.append({
+                "type": "cohort_daily_hours",
+                "cohort_id": cohort_id,
+                "day": normalized_day,
+                "total_hours": total_hours,
+                "limit": COHORT_MAX_HOURS_PER_DAY,
+                "session_ids": [
+                    session.id
+                    for session in cohort_sessions
+                ],
+            })
+
+    # --------------------------------------------------------------
+    # 6. Lecturer lunch break
+    # --------------------------------------------------------------
+
+    lunch_constraints = (
+        get_active_lecturer_lunch_constraints(db)
+    )
+
+    for lecturer_id in lecturer_ids:
+
+        active = any(
+            constraint.lecturer_id == lecturer_id
+            and constraint.day is not None
+            and _days_match(
+                constraint.day,
+                normalized_day,
+            )
+            for constraint in lunch_constraints
+        )
+
+        if not active:
+            continue
+
+        lecturer_sessions = [
+            session
+            for session in day_sessions
+            if session.lecturer_id == lecturer_id
+        ]
+
+        lunch_12_start = day_time_to_slot(
+            normalized_day,
+            "12:00",
+        )
+        lunch_12_end = lunch_12_start + 1
+
+        lunch_13_start = day_time_to_slot(
+            normalized_day,
+            "13:00",
+        )
+        lunch_13_end = lunch_13_start + 1
+
+        sessions_blocking_12 = []
+        sessions_blocking_13 = []
+
+        for session in lecturer_sessions:
+            start_slot = datetime_to_slot(session.start)
+            end_slot = (
+                start_slot
+                + get_duration_slots(session)
+            )
+
+            if (
+                start_slot < lunch_12_end
+                and lunch_12_start < end_slot
+            ):
+                sessions_blocking_12.append(
+                    session.id
+                )
+
+            if (
+                start_slot < lunch_13_end
+                and lunch_13_start < end_slot
+            ):
+                sessions_blocking_13.append(
+                    session.id
+                )
+
+        if (
+            sessions_blocking_12
+            and sessions_blocking_13
+        ):
+            violations.append({
+                "type": "lecturer_lunch_break",
+                "lecturer_id": lecturer_id,
+                "day": normalized_day,
+                "session_ids": list(set(
+                    sessions_blocking_12
+                    + sessions_blocking_13
+                )),
+                "blocking_12_13": sessions_blocking_12,
+                "blocking_13_14": sessions_blocking_13,
+            })
+
+    return violations
 
 
 # endregion

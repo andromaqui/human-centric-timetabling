@@ -1,7 +1,7 @@
 # =========================
 # Python / FastAPI backend
 # =========================
-
+.idea
 __pycache__/
 *.py[cod]
 *$py.class

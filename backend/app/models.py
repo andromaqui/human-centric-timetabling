@@ -2,7 +2,8 @@ from sqlalchemy import ForeignKey, Table, Column, String, Integer, DateTime, JSO
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 from datetime import datetime
-
+from sqlalchemy import Column, String, Integer, Date, ForeignKey, JSON
+from .database import Base
 
 
 class Program(Base):
@@ -202,3 +203,47 @@ class CandidateSolution(Base):
     resulting_timetable = Column(JSON, nullable=False, default=list)
     solve_settings = Column(JSON, nullable=True)
     solver_metadata = Column(JSON, nullable=True)
+
+
+class Semester(Base):
+    __tablename__ = "semesters"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+
+
+class HistoricalImpact(Base):
+    __tablename__ = "historical_impacts"
+
+    id = Column(String, primary_key=True)
+
+    semester_id = Column(
+        String,
+        ForeignKey("semesters.id"),
+        nullable=False,
+    )
+
+    stakeholder_type = Column(String, nullable=False)
+    stakeholder_id = Column(String, nullable=False)
+
+    constraint_id = Column(
+        String,
+        ForeignKey("constraints.id"),
+        nullable=False,
+    )
+
+    impact_type = Column(String, nullable=False)
+
+    occurred_on = Column(Date, nullable=False)
+    day = Column(String, nullable=False)
+
+    # Magnitude of the adverse impact.
+    # Keep it generic and store time-based impacts in minutes.
+    magnitude_minutes = Column(Integer, nullable=False)
+
+    # Type-specific information:
+    # lunch: received_minutes, expected_minutes
+    # teaching: actual_minutes, limit_minutes
+    details = Column(JSON, nullable=False, default=dict)

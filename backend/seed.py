@@ -8,6 +8,7 @@ from app.constraint_logic import (
 )
 from app.database import SessionLocal, engine
 from app import models
+from datetime import date
 
 
 models.Base.metadata.create_all(bind=engine)
@@ -178,7 +179,12 @@ unavailability = [
 # within that two-hour Monday window.
 TEACHING_DAYS = ["mon", "tue", "wed", "thu", "fri"]
 TEACHING_HOURS = range(9, 17)  # 09:00 - 16:00 (last row covers 16:00-17:00)
-LECTURER_1_FREE_SLOTS = {("mon", 12), ("mon", 13)}
+LECTURER_1_FREE_SLOTS = {
+    ("mon", 9),
+    ("mon", 10),
+    ("mon", 12),
+    ("mon", 13),
+}
 
 for day in TEACHING_DAYS:
     for hour in TEACHING_HOURS:
@@ -251,6 +257,13 @@ modules = [
         id="module-1",
         code="CS101",
         title="Programming Fundamentals",
+        required_capacity=50,
+        required_equipment="Projector,Linux lab",
+    ),
+   models.Module(
+        id="module-11",
+        code="CS111",
+        title="Machine Learning Fundamentals",
         required_capacity=50,
         required_equipment="Projector,Linux lab",
     ),
@@ -541,7 +554,7 @@ sessions_data = [
     },
     {
         "id": "session-10",
-        "module_id": "module-1",
+        "module_id": "module-11",
         "lecturer_id": "lecturer-3",
         "room_id": "room-b204",
         "type": "lab",
@@ -737,6 +750,399 @@ candidate_solution = models.CandidateSolution(
 )
 
 db.add(candidate_solution)
+
+semesters = [
+    models.Semester(
+        id="ws-2021-22",
+        name="Winter Semester 2021/22",
+        start_date=date(2021, 9, 1),
+        end_date=date(2022, 1, 31),
+    ),
+    models.Semester(
+        id="ss-2022",
+        name="Summer Semester 2022",
+        start_date=date(2022, 2, 1),
+        end_date=date(2022, 6, 30),
+    ),
+    models.Semester(
+        id="ws-2022-23",
+        name="Winter Semester 2022/23",
+        start_date=date(2022, 9, 1),
+        end_date=date(2023, 1, 31),
+    ),
+    models.Semester(
+        id="ss-2023",
+        name="Summer Semester 2023",
+        start_date=date(2023, 2, 1),
+        end_date=date(2023, 6, 30),
+    ),
+    models.Semester(
+        id="ws-2023-24",
+        name="Winter Semester 2023/24",
+        start_date=date(2023, 9, 1),
+        end_date=date(2024, 1, 31),
+    ),
+    models.Semester(
+        id="ss-2024",
+        name="Summer Semester 2024",
+        start_date=date(2024, 2, 1),
+        end_date=date(2024, 6, 30),
+    ),
+    models.Semester(
+        id="ws-2024-25",
+        name="Winter Semester 2024/25",
+        start_date=date(2024, 9, 1),
+        end_date=date(2025, 1, 31),
+    ),
+    models.Semester(
+        id="ss-2025",
+        name="Summer Semester 2025",
+        start_date=date(2025, 2, 1),
+        end_date=date(2025, 6, 30),
+    ),
+    models.Semester(
+        id="ws-2025-26",
+        name="Winter Semester 2025/26",
+        start_date=date(2025, 9, 1),
+        end_date=date(2026, 1, 31),
+    ),
+]
+
+db.add_all(semesters)
+
+
+historical_impacts = [
+    # ============================================================
+    # LUNCH BREAK — DR. MARIA CHEN
+    # ============================================================
+
+    # Winter Semester 2023/24
+    models.HistoricalImpact(
+        id="impact-1",
+        semester_id="ws-2023-24",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-1",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2023, 10, 9),
+        day="mon",
+        magnitude_minutes=15,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 45,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-2",
+        semester_id="ws-2023-24",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-1",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2023, 11, 14),
+        day="tue",
+        magnitude_minutes=30,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 30,
+        },
+    ),
+
+    # Summer Semester 2024
+    models.HistoricalImpact(
+        id="impact-5",
+        semester_id="ss-2024",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-1",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2024, 3, 6),
+        day="wed",
+        magnitude_minutes=20,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 40,
+        },
+    ),
+
+    # Winter Semester 2024/25
+    models.HistoricalImpact(
+        id="impact-6",
+        semester_id="ws-2024-25",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-1",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2024, 10, 7),
+        day="mon",
+        magnitude_minutes=15,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 45,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-7",
+        semester_id="ws-2024-25",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-1",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2024, 11, 12),
+        day="tue",
+        magnitude_minutes=30,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 30,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-8",
+        semester_id="ws-2024-25",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-1",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2024, 12, 5),
+        day="thu",
+        magnitude_minutes=25,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 35,
+        },
+    ),
+
+    # Summer Semester 2025
+    models.HistoricalImpact(
+        id="impact-9",
+        semester_id="ss-2025",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-1",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2025, 3, 10),
+        day="mon",
+        magnitude_minutes=30,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 30,
+        },
+    ),
+
+    # Winter Semester 2025/26
+    models.HistoricalImpact(
+        id="impact-10",
+        semester_id="ws-2025-26",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-1",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2025, 10, 6),
+        day="mon",
+        magnitude_minutes=20,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 40,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-11",
+        semester_id="ws-2025-26",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-1",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2025, 11, 18),
+        day="tue",
+        magnitude_minutes=45,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 15,
+        },
+    ),
+
+    # ============================================================
+    # LUNCH BREAK — PROF. JAMES O'CONNOR
+    # ============================================================
+
+    models.HistoricalImpact(
+        id="impact-12",
+        semester_id="ws-2023-24",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-2",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2023, 11, 2),
+        day="thu",
+        magnitude_minutes=15,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 45,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-13",
+        semester_id="ws-2024-25",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-2",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2024, 10, 16),
+        day="wed",
+        magnitude_minutes=20,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 40,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-14",
+        semester_id="ws-2024-25",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-2",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2024, 12, 4),
+        day="wed",
+        magnitude_minutes=30,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 30,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-15",
+        semester_id="ss-2025",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-2",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2025, 4, 3),
+        day="thu",
+        magnitude_minutes=15,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 45,
+        },
+    ),
+
+    # ============================================================
+    # LUNCH BREAK — DR. EMMA WALSH
+    # ============================================================
+
+    models.HistoricalImpact(
+        id="impact-16",
+        semester_id="ss-2024",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-3",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2024, 4, 9),
+        day="tue",
+        magnitude_minutes=15,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 45,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-17",
+        semester_id="ws-2024-25",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-3",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2024, 11, 21),
+        day="thu",
+        magnitude_minutes=25,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 35,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-18",
+        semester_id="ws-2025-26",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-3",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2025, 10, 15),
+        day="wed",
+        magnitude_minutes=20,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 40,
+        },
+    ),
+
+    # ============================================================
+    # LUNCH BREAK — PROF. MICHAEL RYAN
+    # ============================================================
+
+    models.HistoricalImpact(
+        id="impact-19",
+        semester_id="ws-2024-25",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-4",
+        constraint_id="lecturer-lunch-break",
+        impact_type="lunch-break-reduced",
+        occurred_on=date(2024, 10, 18),
+        day="fri",
+        magnitude_minutes=15,
+        details={
+            "expected_minutes": 60,
+            "received_minutes": 45,
+        },
+    ),
+
+    # ============================================================
+    # EXISTING CONSECUTIVE-TEACHING DATA
+    # ============================================================
+
+    models.HistoricalImpact(
+        id="impact-3",
+        semester_id="ss-2025",
+        stakeholder_type="lecturer",
+        stakeholder_id="lecturer-2",
+        constraint_id="lecturer-max-one-hour-per-day",
+        impact_type="consecutive-teaching",
+        occurred_on=date(2025, 3, 13),
+        day="thu",
+        magnitude_minutes=120,
+        details={
+            "limit_minutes": 240,
+            "actual_minutes": 360,
+        },
+    ),
+
+    models.HistoricalImpact(
+        id="impact-4",
+        semester_id="ws-2025-26",
+        stakeholder_type="cohort",
+        stakeholder_id="cs-y2",
+        constraint_id="cohort-max-teaching-hours-per-day",
+        impact_type="consecutive-teaching",
+        occurred_on=date(2025, 11, 10),
+        day="mon",
+        magnitude_minutes=60,
+        details={
+            "limit_minutes": 240,
+            "actual_minutes": 300,
+        },
+    ),
+]
+
+db.add_all(historical_impacts)
 db.commit()
 
 # endregion

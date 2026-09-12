@@ -1,0 +1,184 @@
+.room-suitability {
+  width: 320px;
+
+  background: #ffffff;
+  border: 1px solid #dfe5f2;
+  border-radius: 14px;
+
+  overflow: hidden;
+
+  color: #1e2340;
+}
+
+.room-suitability-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.room-suitability-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #3f4b99;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.room-suitability-link:hover {
+  text-decoration: underline;
+}
+
+.room-suitability-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  padding: 14px 16px;
+
+  border-bottom: 1px solid #edf0f6;
+
+  font-size: 14px;
+}
+
+.room-suitability-header strong {
+  font-weight: 700;
+}
+
+.room-suitability-section {
+  padding: 16px;
+}
+
+.room-suitability-section + .room-suitability-section {
+  border-top: 1px solid #edf0f6;
+}
+
+.room-suitability-label {
+  display: block;
+
+  margin-bottom: 12px;
+
+  font-size: 11px;
+  font-weight: 700;
+
+  color: #6b7290;
+
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+
+/* Capacity */
+
+.room-suitability-capacity {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+
+  gap: 12px;
+
+  margin-bottom: 12px;
+}
+
+.room-suitability-capacity > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+
+  padding: 10px 12px;
+
+  background: #f7f8fc;
+  border: 1px solid #edf0f6;
+  border-radius: 9px;
+}
+
+.room-suitability-capacity span {
+  font-size: 11px;
+  color: #7a819c;
+}
+
+.room-suitability-capacity strong {
+  font-size: 14px;
+  font-weight: 700;
+
+  color: #1e2340;
+}
+
+
+/* Result message */
+
+.room-suitability-result {
+  padding: 9px 11px;
+
+  border-radius: 8px;
+
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.room-suitability-result.is-ok {
+  background: #eef8f1;
+  color: #39724b;
+}
+
+.room-suitability-result.is-conflict {
+  background: #fff0ee;
+  color: #a7463d;
+}
+
+
+/* Equipment */
+
+.room-suitability-equipment {
+  display: flex;
+  flex-direction: column;
+}
+
+.room-suitability-equipment-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  gap: 16px;
+
+  padding: 10px 0;
+
+  border-bottom: 1px solid #edf0f6;
+
+  font-size: 12px;
+}
+
+.room-suitability-equipment-row:first-child {
+  padding-top: 0;
+}
+
+.room-suitability-equipment-row:last-child {
+  border-bottom: none;
+}
+
+.room-suitability-equipment-row > span:first-child {
+  font-weight: 600;
+}
+
+.room-suitability-equipment-status {
+  white-space: nowrap;
+
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.room-suitability-equipment-status.is-ok {
+  color: #39724b;
+}
+
+.room-suitability-equipment-status.is-missing {
+  color: #a7463d;
+}
+
+.room-suitability-equipment
+  + .room-suitability-result {
+  margin-top: 10px;
+}

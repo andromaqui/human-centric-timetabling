@@ -1,0 +1,120 @@
+.requested-change-summary {
+  margin: 18px 0 22px;
+  padding: 18px 20px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.requested-change-summary-heading {
+  margin-bottom: 16px;
+}
+
+.requested-change-summary-eyebrow {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.requested-change-summary-heading h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.requested-change-summary-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.requested-change-summary-row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid #f1f3f5;
+}
+
+.requested-change-summary-row:last-child {
+  border-bottom: none;
+}
+
+.requested-change-summary-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.requested-change-summary-values {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+
+  font-size: 14px;
+  color: #4b5563;
+}
+
+.requested-change-summary-values strong {
+  color: #111827;
+  font-weight: 600;
+}
+
+.requested-change-summary-arrow {
+  text-align: center;
+  color: #9ca3af;
+  font-size: 16px;
+}
+
+.requested-change-summary-scope {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+
+  margin-top: 14px;
+  padding: 11px 13px;
+
+  border-radius: 8px;
+  background: #f8f9fb;
+
+  font-size: 13px;
+}
+
+.requested-change-summary-scope > span {
+  color: #6b7280;
+  font-weight: 600;
+}
+
+.requested-change-summary-scope > strong {
+  color: #374151;
+  font-weight: 600;
+  text-align: right;
+}
+
+@media (max-width: 700px) {
+  .requested-change-summary-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .requested-change-summary-values {
+    grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr);
+  }
+
+  .requested-change-summary-scope {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .requested-change-summary-scope > strong {
+    text-align: left;
+  }
+}

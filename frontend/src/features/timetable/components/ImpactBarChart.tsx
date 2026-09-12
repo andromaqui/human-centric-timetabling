@@ -1,69 +1,63 @@
+import { useMemo } from "react";
+
+import type {
+  HistoricalImpact,
+  HistoricalImpactType,
+  HistoricalStakeholderType,
+} from "../pages/historicalImpacts";
+
 import "./ImpactBarChart.css";
 
 type ImpactBarChartProps = {
-  impactType: "lunch-break-reduced" | "consecutive-teaching";
-  stakeholderType: "lecturer" | "cohort";
+  impactType: HistoricalImpactType;
+  stakeholderType: HistoricalStakeholderType;
+  impacts: HistoricalImpact[];
 };
 
 export function ImpactBarChart({
   impactType,
   stakeholderType,
+  impacts,
 }: ImpactBarChartProps) {
-  const isLunch = impactType === "lunch-break-reduced";
+  const isLunch =
+    impactType === "lunch-break-reduced";
 
-  /*
-   * Dummy data for now.
-   * Later this will come from historicalStakeholderImpacts.
-   */
-  const lecturerData = isLunch
-    ? [
-        { name: "Dr. Maria Chen", value: 185 },
-        { name: "Prof. James O'Connor", value: 105 },
-        { name: "Dr. Emma Walsh", value: 70 },
-        { name: "Prof. Michael Ryan", value: 40 },
-      ]
-    : [
-        { name: "Dr. Maria Chen", value: 750 },
-        { name: "Prof. James O'Connor", value: 525 },
-        { name: "Dr. Emma Walsh", value: 330 },
-        { name: "Prof. Michael Ryan", value: 195 },
-      ];
+  const data = useMemo(() => {
+    const totals = new Map<
+      string,
+      {
+        name: string;
+        value: number;
+      }
+    >();
 
-  const cohortData = isLunch
-    ? [
-        { name: "Computer Science Year 1", value: 220 },
-        { name: "Computer Science Year 2", value: 160 },
-        { name: "Data Science Year 1", value: 95 },
-        { name: "Software Engineering Year 2", value: 55 },
-      ]
-    : [
-        { name: "Computer Science Year 1", value: 620 },
-        { name: "Computer Science Year 2", value: 480 },
-        { name: "Data Science Year 1", value: 310 },
-        { name: "Software Engineering Year 2", value: 180 },
-      ];
+    impacts.forEach((impact) => {
+      const existing = totals.get(
+        impact.stakeholder_id,
+      );
 
-  /*
-   * Choose which stakeholder data to display.
-   */
-  const data =
-    stakeholderType === "lecturer"
-      ? lecturerData
-      : cohortData;
+      if (!existing) {
+        totals.set(impact.stakeholder_id, {
+          name: impact.stakeholder_name,
+          value: impact.magnitude_minutes,
+        });
 
-  /*
-   * Largest value determines the width of the other bars.
-   */
-  const maxValue = Math.max(
-    ...data.map((item) => item.value),
-  );
+        return;
+      }
 
-  /*
-   * Lunch is displayed in minutes.
-   *
-   * Consecutive teaching is stored in minutes but displayed
-   * as hours + minutes.
-   */
+      existing.value += impact.magnitude_minutes;
+    });
+
+    return Array.from(totals.values()).sort(
+      (a, b) => b.value - a.value,
+    );
+  }, [impacts]);
+
+  const maxValue =
+    data.length > 0
+      ? Math.max(...data.map((item) => item.value))
+      : 0;
+
   function formatValue(value: number) {
     if (isLunch) {
       return `${value} min`;
@@ -72,9 +66,15 @@ export function ImpactBarChart({
     const hours = Math.floor(value / 60);
     const minutes = value % 60;
 
-    return minutes === 0
-      ? `${hours} h`
-      : `${hours} h ${minutes} min`;
+    if (hours === 0) {
+      return `${minutes} min`;
+    }
+
+    if (minutes === 0) {
+      return `${hours} h`;
+    }
+
+    return `${hours} h ${minutes} min`;
   }
 
   return (
@@ -89,31 +89,42 @@ export function ImpactBarChart({
         </p>
       </div>
 
-      <div className="impact-bar-chart-list">
-        {data.map((item) => (
-          <div
-            key={item.name}
-            className="impact-bar-chart-row"
-          >
-            <span className="impact-bar-chart-name">
-              {item.name}
-            </span>
+      {data.length === 0 ? (
+        <p className="impact-bar-chart-empty">
+          No historical impact data available.
+        </p>
+      ) : (
+        <div className="impact-bar-chart-list">
+          {data.map((item) => (
+            <div
+              key={item.name}
+              className="impact-bar-chart-row"
+            >
+              <span className="impact-bar-chart-name">
+                {item.name}
+              </span>
 
-            <div className="impact-bar-chart-track">
-              <div
-                className="impact-bar-chart-fill"
-                style={{
-                  width: `${(item.value / maxValue) * 100}%`,
-                }}
-              />
+              <div className="impact-bar-chart-track">
+                <div
+                  className="impact-bar-chart-fill"
+                  style={{
+                    width:
+                      maxValue === 0
+                        ? "0%"
+                        : `${
+                            (item.value / maxValue) * 100
+                          }%`,
+                  }}
+                />
+              </div>
+
+              <strong className="impact-bar-chart-value">
+                {formatValue(item.value)}
+              </strong>
             </div>
-
-            <strong className="impact-bar-chart-value">
-              {formatValue(item.value)}
-            </strong>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
