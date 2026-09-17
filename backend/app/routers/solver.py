@@ -1,15 +1,17 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-
 from app.database import get_db
-from app.schemas import RescheduleRequestIn
 from app.solver.reschedule import (
     solve_reschedule,
     build_pre_solve_context,
+    solve_reschedule_min_perturbation,
     request_is_concrete,
     get_proposed_values,
     diagnose_specific_request, get_session,
 )
+
+from app.schemas import (RescheduleRequestIn, MixedRecoveryRequestIn)
+from app.solver.mixed_recovery import (solve_reschedule_mixed_recovery,)
 
 router = APIRouter(prefix="/solver", tags=["solver"])
 
@@ -22,10 +24,7 @@ def reschedule(request: RescheduleRequestIn, db: Session = Depends(get_db),):
 
 
 @router.post("/reschedule/preview-conflicts")
-def preview_reschedule_conflicts(
-    request: RescheduleRequestIn,
-    db: Session = Depends(get_db),
-):
+def preview_reschedule_conflicts(request: RescheduleRequestIn, db: Session = Depends(get_db),):
     # Run the same request validation as the actual solver.
     pre_solve = build_pre_solve_context(request, db)
 
@@ -122,3 +121,18 @@ def diagnose_reschedule(request: RescheduleRequestIn, db: Session = Depends(get_
         "status": "diagnosed",
         "diagnostics": diagnostics,
     }
+
+
+@router.post("/reschedule/min-perturbation")
+def reschedule_min_perturbation(request: RescheduleRequestIn, db: Session = Depends(get_db)):
+    return solve_reschedule_min_perturbation(request, db)
+
+
+@router.post("/reschedule/mixed")
+def reschedule_mixed(payload: MixedRecoveryRequestIn, db: Session = Depends(get_db)):
+    return solve_reschedule_mixed_recovery(
+        request=payload.request,
+        max_perturbations=payload.max_perturbations,
+        allowed_relaxations=payload.allowed_relaxations,
+        db=db,
+    )

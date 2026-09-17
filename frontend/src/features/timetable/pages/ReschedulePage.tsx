@@ -224,12 +224,17 @@ type AdditionalChange = {
   new_room_id: string;
 };
 
+type RecoveryOptions = {
+  can_perturb: boolean;
+  minimum_perturbations: number | null;
+};
+
 type RescheduleResponse =
   | {
       status: "feasible";
       reason: null;
       session_id: string;
-      solution?: RescheduleSolution; // keep if you still use it
+      solution?: RescheduleSolution;
       start_slot?: number;
       day?: string;
       time?: string;
@@ -242,6 +247,7 @@ type RescheduleResponse =
       reason: string | null;
       session_id?: string;
       diagnostics?: Diagnostics | null;
+      recovery_options?: RecoveryOptions;
     };
 
 const initialObjectives: Objective[] = [
@@ -418,6 +424,7 @@ export function ReschedulePage() {
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const [rescheduleScope, setRescheduleScope] = useState<RescheduleScope>(null);
   const [solverResult, setSolverResult] = useState<RescheduleResponse | null>(null);
+  const [perturbationPreview, setPerturbationPreview] = useState<RescheduleResponse | null>(null);
   const [solverLoading, setSolverLoading] = useState(false);
   const [solverError, setSolverError] = useState<string | null>(null);
 
@@ -451,7 +458,6 @@ export function ReschedulePage() {
 
   const stepOneInvalid =
     !changeType ||
-    !rescheduleScope ||
     (
       (changeType === "time" || changeType === "both") &&
       !timeKnowledge
@@ -1525,129 +1531,142 @@ export function ReschedulePage() {
     }
   }
 
-  async function runRescheduleWithAdditionalChanges(
-    maxAdditionalChanges: number,
-  ) {
-    if (!selectedEvent) return;
+async function runRescheduleWithAdditionalChanges() {
+  if (!selectedEvent) return;
 
-    setSolverLoading(true);
-    setSolverError(null);
-    setAppliedTemporaryDeactivations([]);
+  setSolverLoading(true);
+  setSolverError(null);
+  setAppliedTemporaryDeactivations([]);
 
-    try {
-      let request: RescheduleRequest;
+  try {
+    let request: RescheduleRequest;
 
-      /*
-       * If Step 4 is diagnosing a request that originally used FIND,
-       * retry the concrete combination currently selected in the
-       * diagnosis controls. The user is authorising cascading changes
-       * to make THAT combination work.
-       */
-      if (needsInteractiveDiagnosis && originalModes) {
-        const lecturerId =
-          originalModes.lecturer === "find"
-            ? diagLecturer
-            : selectedLecturer ?? selectedEvent.lecturer?.id ?? null;
+    /*
+     * If the original request used FIND, use the concrete
+     * combination currently selected in Step 4.
+     */
+    if (needsInteractiveDiagnosis && originalModes) {
+      const lecturerId =
+        originalModes.lecturer === "find"
+          ? diagLecturer
+          : selectedLecturer ?? selectedEvent.lecturer?.id ?? null;
 
-        let roomId: string | null = null;
+      let roomId: string | null = null;
 
-        if (originalModes.room === "find") {
-          roomId = diagRoom;
-        } else if (selectedRoom) {
-          roomId =
-            data?.rooms.find((room) => room.name === selectedRoom)?.id ?? null;
-        } else {
-          roomId =
-            data?.rooms.find(
-              (room) => room.name === selectedEvent.session.room,
-            )?.id ?? null;
-        }
-
-        const day =
-          originalModes.time === "find"
-            ? diagDay
-            : selectedDay ??
-              new Date(selectedEvent.session.start).toLocaleDateString("en-US", {
-                weekday: "long",
-              });
-
-        const time =
-          originalModes.time === "find"
-            ? diagTime
-            : selectedTime ??
-              new Date(selectedEvent.session.start).toLocaleTimeString("en-US", {
-                hour: "2-digit",
-                minute: "2-digit",
-                hour12: false,
-              });
-
-        if (!lecturerId || !roomId || !day || !time) {
-          setSolverError("Could not build the concrete retry request.");
-          return;
-        }
-
-        const requestedStart = buildTimetableLocalStart(
-          selectedEvent.session.start,
-          day,
-          time,
-        );
-
-        if (!requestedStart) {
-          setSolverError("Could not build the retry date.");
-          return;
-        }
-
-        request = {
-          session_id: selectedEvent.session.id,
-          time_mode: "specific",
-          requested_start: requestedStart,
-          room_mode: "specific",
-          requested_room_id: roomId,
-          lecturer_mode: "specific",
-          requested_lecturer_id: lecturerId,
-          max_additional_changes: maxAdditionalChanges,
-        };
+      if (originalModes.room === "find") {
+        roomId = diagRoom;
+      } else if (selectedRoom) {
+        roomId =
+          data?.rooms.find(
+            (room) => room.name === selectedRoom,
+          )?.id ?? null;
       } else {
-        request = {
-          ...buildRescheduleRequest(),
-          max_additional_changes: maxAdditionalChanges,
-        };
+        roomId =
+          data?.rooms.find(
+            (room) =>
+              room.name === selectedEvent.session.room,
+          )?.id ?? null;
       }
 
-      console.log(
-        "Retrying with additional timetable changes:",
-        request,
+      const day =
+        originalModes.time === "find"
+          ? diagDay
+          : selectedDay ??
+            new Date(
+              selectedEvent.session.start,
+            ).toLocaleDateString("en-US", {
+              weekday: "long",
+            });
+
+      const time =
+        originalModes.time === "find"
+          ? diagTime
+          : selectedTime ??
+            new Date(
+              selectedEvent.session.start,
+            ).toLocaleTimeString("en-US", {
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            });
+
+      if (!lecturerId || !roomId || !day || !time) {
+        setSolverError(
+          "Could not build the concrete perturbation request.",
+        );
+        return;
+      }
+
+      const requestedStart = buildTimetableLocalStart(
+        selectedEvent.session.start,
+        day,
+        time,
       );
 
-      setOriginalModes({
-        time: request.time_mode,
-        room: request.room_mode,
-        lecturer: request.lecturer_mode,
-      });
+      if (!requestedStart) {
+        setSolverError(
+          "Could not build the perturbation date.",
+        );
+        return;
+      }
 
-      const result = await api.post<RescheduleResponse>(
-        "/solver/reschedule",
-        request,
-      );
+      request = {
+        session_id: selectedEvent.session.id,
+        time_mode: "specific",
+        requested_start: requestedStart,
+        room_mode: "specific",
+        requested_room_id: roomId,
+        lecturer_mode: "specific",
+        requested_lecturer_id: lecturerId,
+        max_additional_changes: null,
+      };
+    } else {
+      request = {
+        ...buildRescheduleRequest(),
 
-      setSolverResult(result);
-      setDiagResult(null);
-      setDiagError(null);
-    } catch (error) {
-      console.error(
-        "Failed to retry with additional timetable changes:",
-        error,
-      );
-
-      setSolverError(
-        error instanceof Error
-          ? error.message
-          : "Failed to retry the solver",
-      );
-    } finally {
-      setSolverLoading(false);
+        // The minimum-perturbation solver decides the
+        // minimum number itself. There is no user-supplied N.
+        max_additional_changes: null,
+      };
     }
+
+    console.log(
+      "Running minimum-perturbation recovery:",
+      request,
+    );
+
+    const result = await api.post<RescheduleResponse>(
+      "/solver/reschedule/min-perturbation",
+      request,
+    );
+
+    console.log(
+      "Minimum-perturbation result:",
+      result,
+    );
+
+    if (result.status === "feasible") {
+      setPerturbationPreview(result);
+    } else {
+      setSolverResult(result);
+    }
+    setDiagResult(null);
+    setDiagError(null);
+  } catch (error) {
+    console.error(
+      "Failed to run minimum-perturbation recovery:",
+      error,
+    );
+
+    setSolverError(
+      error instanceof Error
+        ? error.message
+        : "Failed to find a minimum-perturbation recovery",
+    );
+  } finally {
+    setSolverLoading(false);
   }
+}
 
   async function handleContinue() {
     if (step === 1 && stepOneInvalid) {
@@ -2304,12 +2323,6 @@ export function ReschedulePage() {
                     >
                       Change time and room
                     </button>
-                    <button
-                      className={changeType === "lecturer" ? "active" : ""}
-                      onClick={() => setChangeType("lecturer")}
-                    >
-                      Change lecturer
-                    </button>
                   </div>
                 </div>
 
@@ -2426,39 +2439,13 @@ export function ReschedulePage() {
                 </div>
               )}
 
-              {changeType && (
-                <div className="impact-group">
-                  <div className="impact-label">
-                    How many other classes are allowed to be rescheduled?
-                  </div>
 
-                  <div className="request-options">
-                    <button
-                      className={rescheduleScope === "only" ? "active" : ""}
-                      onClick={() => setRescheduleScope("only")}
-                    >
-                      Only this class
-                    </button>
-                    <button
-                      className={rescheduleScope === "up-to-2" ? "active" : ""}
-                      onClick={() => setRescheduleScope("up-to-2")}
-                    >
-                      Up to 2 other classes
-                    </button>
-                    <button
-                      className={rescheduleScope === "up-to-3" ? "active" : ""}
-                      onClick={() => setRescheduleScope("up-to-3")}
-                    >
-                      Up to 3 other classes
-                    </button>
-                  </div>
-                </div>
-              )}
               </div>
 
               {!stepOneInvalid && (
                 <>
                   <h2 className="impacted-stakeholders-heading">Impacted Stakeholders</h2>
+
 
                   <div className="impact-stakeholders">
                     <div className="impact-group">
@@ -2656,6 +2643,8 @@ export function ReschedulePage() {
               selectedEventRoom={selectedEvent?.session.room}
               selectedEventLecturerName={selectedEvent?.lecturer?.name}
               originalModes={originalModes}
+              perturbationPreview={perturbationPreview}
+              mixedRecoveryRequest={buildRescheduleRequest()}
               requestedTimeLabel={
                           originalModes?.time === "find"
                             ? "Any suitable time"
@@ -2693,6 +2682,7 @@ export function ReschedulePage() {
               days={days}
               timeSlots={timeSlots}
               lecturers={data!.lecturers}
+              modules={data?.modules ?? []}
               rooms={data!.rooms}
               cohorts={data!.cohorts}
               sessions={data!.sessions}

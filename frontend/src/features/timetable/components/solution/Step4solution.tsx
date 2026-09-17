@@ -11,6 +11,7 @@ import {
 
 import { StakeholderViolationsPanel } from "./StakeholderViolationsPanel";
 import { HistoricalImpactSummary } from "../../../impact/components/HistoricalImpactSummary";
+import { api } from "../../../../shared/api/client";
 
 import {
   fetchHistoricalImpacts,
@@ -21,6 +22,21 @@ import {
 
 import "./Step4solution.css";
 import { RequestedChangeSummary } from "../RequestedChangeSummary";
+
+type RelaxableConstraintInstance = {
+  instance_id: string;
+  constraint_id: string;
+  constraint_name: string;
+  stakeholder_id: string;
+  stakeholder_name: string;
+  day: string | null;
+};
+
+type RelaxableConstraintGroups = {
+  lecturer: RelaxableConstraintInstance[];
+  cohort: RelaxableConstraintInstance[];
+  session: RelaxableConstraintInstance[];
+};
 
 type Mode = "keep" | "specific" | "find";
 
@@ -61,6 +77,40 @@ type AdditionalChange = {
 };
 
 
+type RecoveryOptions = {
+  can_perturb: boolean;
+  minimum_perturbations: number | null;
+};
+
+type RescheduleRequest = {
+  session_id: string;
+  time_mode: "keep" | "specific" | "find";
+  requested_start: string | null;
+  room_mode: "keep" | "specific" | "find";
+  requested_room_id: string | null;
+  lecturer_mode: "keep" | "specific" | "find";
+  requested_lecturer_id: string | null;
+  temporarily_deactivated_constraints?: TemporaryConstraintDeactivation[];
+  max_additional_changes?: number | null;
+};
+
+type MixedRecoveryResult = {
+  status: "feasible" | "infeasible" | "invalid";
+  reason: string | null;
+  session_id?: string;
+  start_slot?: number;
+  day?: string;
+  time?: string;
+  room_id?: string;
+  lecturer_id?: string;
+  additional_changes?: AdditionalChange[];
+  perturbation_count?: number;
+  max_perturbations?: number;
+  allowed_relaxations?: TemporaryConstraintDeactivation[];
+  used_relaxations?: TemporaryConstraintDeactivation[];
+  relaxation_count?: number;
+};
+
 type RescheduleResponse =
   | {
       status: "feasible";
@@ -79,12 +129,19 @@ type RescheduleResponse =
       reason: string | null;
       session_id?: string;
       diagnostics?: Diagnostics | null;
+      recovery_options?: RecoveryOptions;
     };
-
 
 type NamedEntity = {
   id: string;
   name: string;
+};
+
+type ModuleLike = {
+  id: string;
+  code?: string;
+  name?: string;
+  title?: string;
 };
 
 
@@ -180,6 +237,8 @@ type Step4SolutionProps = {
   solverLoading: boolean;
   solverError: string | null;
   solverResult: RescheduleResponse | null;
+  perturbationPreview: RescheduleResponse | null;
+  mixedRecoveryRequest: RescheduleRequest;
 
   selectedModuleLabel: string | null;
   selectedEventFallbackId?: string;
@@ -209,9 +268,7 @@ type Step4SolutionProps = {
     constraints: TemporaryConstraintDeactivation[],
   ) => void;
 
-  onFindRearrangements: (
-    maxAdditionalChanges: number,
-  ) => void;
+  onFindRearrangements: () => void;
 
   appliedTemporaryDeactivations:
     TemporaryConstraintDeactivation[];
@@ -224,6 +281,7 @@ type Step4SolutionProps = {
   rooms: NamedEntity[];
   cohorts: NamedEntity[];
   sessions: SessionLike[];
+  modules: ModuleLike[];
 
   lecturerUnavailableSlotMap:
     Record<string, string[]>;
@@ -263,6 +321,8 @@ export function Step4Solution({
   solverLoading,
   solverError,
   solverResult,
+  perturbationPreview,
+  mixedRecoveryRequest,
 
   selectedModuleLabel,
   selectedEventFallbackId,
@@ -290,6 +350,7 @@ export function Step4Solution({
   rooms,
   cohorts,
   sessions,
+  modules,
 
   lecturerUnavailableSlotMap,
   excludeSessionId,
@@ -325,19 +386,18 @@ export function Step4Solution({
   ] = useState<RecoveryOption | null>(null);
 
   const [explanationOpen, setExplanationOpen] = useState(true);
-  const [recoveryOpen, setRecoveryOpen] = useState(true);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
 
-  const [
-    rearrangeMode,
-    setRearrangeMode,
-  ] = useState<"minimal" | "limit">(
-    "minimal",
-  );
+  const [mixedRecoveryOpen, setMixedRecoveryOpen] = useState(false);
+  const [mixedPerturbationLimit, setMixedPerturbationLimit] = useState(1);
 
-  const [
-    maxAdditionalChanges,
-    setMaxAdditionalChanges,
-  ] = useState(2);
+  const [relaxableConstraints, setRelaxableConstraints] = useState<RelaxableConstraintGroups | null>(null);
+  const [allowedRelaxationIds, setAllowedRelaxationIds] = useState<string[]>([]);
+  const [allowedRelaxationsOpen, setAllowedRelaxationsOpen] = useState(false);
+  const [mixedRecoveryLoading, setMixedRecoveryLoading] = useState(false);
+  const [mixedRecoveryError, setMixedRecoveryError] = useState<string | null>(null);
+  const [mixedRecoveryResult, setMixedRecoveryResult] =
+    useState<MixedRecoveryResult | null>(null);
 
   /*
    * Historical impacts used in the Relax Constraints section.
@@ -361,6 +421,84 @@ export function Step4Solution({
           : option,
     );
   }
+
+
+async function loadRelaxableConstraints() {
+  if (relaxableConstraints) {
+    return;
+  }
+
+  const data = await api.get<RelaxableConstraintGroups>(
+    "/constraints/relaxable-instances",
+  );
+
+  setRelaxableConstraints(data);
+
+}
+
+
+const allRelaxableConstraints = relaxableConstraints
+  ? [
+      ...relaxableConstraints.lecturer.map((constraint) => ({
+        ...constraint,
+        instance_type: "lecturer" as const,
+      })),
+      ...relaxableConstraints.cohort.map((constraint) => ({
+        ...constraint,
+        instance_type: "cohort" as const,
+      })),
+      ...relaxableConstraints.session.map((constraint) => ({
+        ...constraint,
+        instance_type: "session" as const,
+      })),
+    ]
+  : [];
+
+const selectedAllowedRelaxations = allRelaxableConstraints.filter(
+  (constraint) => allowedRelaxationIds.includes(constraint.instance_id),
+);
+
+async function findMixedRecoverySolution() {
+  setMixedRecoveryLoading(true);
+  setMixedRecoveryError(null);
+  setMixedRecoveryResult(null);
+
+  try {
+    const allowedRelaxations: TemporaryConstraintDeactivation[] =
+      selectedAllowedRelaxations.map((constraint) => ({
+        constraint_id: constraint.constraint_id,
+        instance_type: constraint.instance_type,
+        // IMPORTANT: the mixed solver expects the stakeholder/entity id,
+        // not the database constraint-instance row id used by the checkbox.
+        instance_id: constraint.stakeholder_id,
+        day: constraint.day,
+      }));
+
+    const result = await api.post<MixedRecoveryResult>(
+      "/solver/reschedule/mixed",
+      {
+        request: {
+          ...mixedRecoveryRequest,
+          temporarily_deactivated_constraints: [],
+          max_additional_changes: null,
+        },
+        max_perturbations: mixedPerturbationLimit,
+        allowed_relaxations: allowedRelaxations,
+      },
+    );
+
+    setMixedRecoveryResult(result);
+  } catch (error) {
+    console.error("Failed to run mixed recovery:", error);
+    setMixedRecoveryError(
+      error instanceof Error
+        ? error.message
+        : "Could not run mixed recovery.",
+    );
+  } finally {
+    setMixedRecoveryLoading(false);
+  }
+}
 
 
   /*
@@ -477,21 +615,16 @@ export function Step4Solution({
   ]);
 
 
-  /*
-   * Rearranging other classes cannot change a lecturer's
-   * declared unavailability.
-   */
-  const hasLecturerUnavailability =
-    activeViolations.some(
-      (violation) =>
-        violation.type ===
-        "lecturer_unavailable",
-    );
+const canRearrange =
+  !needsInteractiveDiagnosis &&
+  solverResult?.status === "infeasible" &&
+  solverResult.recovery_options?.can_perturb === true;
 
-
-  const canRearrange =
-    hasActiveDiagnosis &&
-    !hasLecturerUnavailability;
+const minimumPerturbations =
+  !needsInteractiveDiagnosis &&
+  solverResult?.status === "infeasible"
+    ? solverResult.recovery_options?.minimum_perturbations ?? null
+    : null;
 
 
   /*
@@ -510,6 +643,10 @@ export function Step4Solution({
   const canRelax =
     hasActiveDiagnosis &&
     unrelaxableViolations.length === 0;
+
+  const canMixedRecovery =
+    hasActiveDiagnosis &&
+    (canRelax || canRearrange);
 
 
   const lecturerUnavailableViolation =
@@ -637,19 +774,38 @@ export function Step4Solution({
   }
 
 
-  function getAdditionalChangeSessionLabel(
-    sessionId: string,
-  ): string {
-    const matchingSession =
-      sessions.find(
-        (session) =>
-          session.id === sessionId,
-      );
+function getAdditionalChangeSessionLabel(
+  sessionId: string,
+): string {
+  const matchingSession = sessions.find(
+    (session) => session.id === sessionId,
+  );
 
-    return (
-      matchingSession?.moduleId ??
-      sessionId
-    );
+  if (!matchingSession?.moduleId) {
+    return sessionId;
+  }
+
+  const matchingModule = modules.find(
+    (module) => module.id === matchingSession.moduleId,
+  );
+
+  if (!matchingModule) {
+    return matchingSession.moduleId;
+  }
+
+  const code =
+    matchingModule.code ?? matchingModule.id;
+
+  const name =
+    matchingModule.name ?? matchingModule.title;
+
+  return name
+    ? `${code} · ${name}`
+    : code;
+}
+
+  function getAdditionalChangeSession(sessionId: string,): SessionLike | undefined {
+      return sessions.find((session) => session.id === sessionId,);
   }
 
 
@@ -1253,10 +1409,6 @@ export function Step4Solution({
                   <span className="infeasible-eyebrow">
                     FEASIBILITY EXPLANATION
                   </span>
-
-                  <h3>
-                    Why can't this request be scheduled?
-                  </h3>
                 </div>
 
                 {explanationOpen ? (
@@ -1606,15 +1758,8 @@ export function Step4Solution({
                     RECOVERY OPTIONS
                   </span>
 
-                  <h3>
-                    What could make this request feasible?
-                  </h3>
 
-                  <p>
-                    Choose how the system
-                    should expand its search
-                    for a solution.
-                  </p>
+
                 </div>
 
                 {recoveryOpen ? (
@@ -1626,452 +1771,64 @@ export function Step4Solution({
 
 
               {recoveryOpen && (
-              <div className="recovery-options">
-
-                {/* OPTION 1 */}
-
-                <div
-                  className={`recovery-option ${
-                    selectedRecoveryOption ===
-                    "different-request"
-                      ? "selected"
-                      : ""
-                  }`}
-                >
-                  <button
-                    type="button"
-                    className="recovery-option-button"
-                    onClick={() =>
-                      toggleRecoveryOption(
-                        "different-request",
-                      )
-                    }
-                    aria-expanded={
-                      selectedRecoveryOption ===
-                      "different-request"
-                    }
-                  >
-                    <div className="recovery-option-icon">
-                      <CalendarRange
-                        size={20}
-                      />
-                    </div>
-
-
-                    <div className="recovery-option-copy">
-                      <div className="recovery-option-title-row">
-                        <h4>
-                          Choose a different
-                          option
-                        </h4>
-
-                        {selectedRecoveryOption ===
-                        "different-request" ? (
-                          <ChevronUp
-                            size={18}
-                          />
-                        ) : (
-                          <ChevronDown
-                            size={18}
-                          />
-                        )}
-                      </div>
-
-                      <p>
-                        Look for another time,
-                        room, or lecturer for
-                        this class.
-                      </p>
-
-                      <span className="recovery-protection">
-                        Existing timetable and
-                        constraints stay
-                        unchanged.
-                      </span>
-                    </div>
-                  </button>
-
-
-                  {selectedRecoveryOption ===
-                    "different-request" && (
-                    <div className="recovery-expanded">
-                      <p>
-                        Return to{" "}
-                        <strong>
-                          Step 1: Request
-                        </strong>{" "}
-                        to change your time,
-                        room, lecturer, or
-                        other selections.
-                      </p>
-
-                      <button
-                        type="button"
-                        className="back-to-request-button"
-                        onClick={
-                          onBackToRequest
-                        }
+                <>
+                  {firstUnrelaxableViolation &&
+                    !canRelax &&
+                    !canRearrange && (
+                    <div
+                      style={{
+                        marginTop: "18px",
+                        padding: "14px 16px",
+                        border: "1px solid #f0b8b8",
+                        borderRadius: "10px",
+                        background: "#fff7f7",
+                      }}
+                    >
+                      <strong
+                        style={{
+                          color: "#9f2929",
+                        }}
                       >
-                        ← Back to Step 1
-                      </button>
-                    </div>
-                  )}
-                </div>
+                        This slot cannot be recovered.
+                      </strong>
 
-
-                {/* OPTION 2 */}
-
-                <div
-                  className={`recovery-option ${
-                    selectedRecoveryOption ===
-                    "rearrange"
-                      ? "selected"
-                      : ""
-                  } ${
-                    !canRearrange
-                      ? "disabled"
-                      : ""
-                  }`}
-                >
-                  <button
-                    type="button"
-                    className="recovery-option-button"
-                    onClick={() =>
-                      canRearrange &&
-                      toggleRecoveryOption(
-                        "rearrange",
-                      )
-                    }
-                    aria-expanded={
-                      selectedRecoveryOption ===
-                      "rearrange"
-                    }
-                    disabled={
-                      !canRearrange
-                    }
-                  >
-                    <div className="recovery-option-icon">
-                      <RefreshCw
-                        size={20}
-                      />
-                    </div>
-
-
-                    <div className="recovery-option-copy">
-                      <div className="recovery-option-title-row">
-                        <div className="recovery-title-with-status">
-                          <h4>
-                            Rearrange the
-                            timetable
-                          </h4>
-
-                          {!canRearrange && (
-                            <span className="recovery-unavailable-badge">
-                              Not available
-                            </span>
-                          )}
-                        </div>
-
-                        {canRearrange &&
-                          (selectedRecoveryOption ===
-                          "rearrange" ? (
-                            <ChevronUp
-                              size={18}
-                            />
-                          ) : (
-                            <ChevronDown
-                              size={18}
-                            />
-                          ))}
-                      </div>
-
-                      <p>
-                        Keep this request and
-                        allow other classes to
-                        move to make room.
-                      </p>
-
-                      {canRearrange ? (
-                        <span className="recovery-protection">
-                          Constraints stay
-                          enforced.
-                        </span>
-                      ) : hasLecturerUnavailability &&
-                        lecturerUnavailableViolation ? (
-                        <span className="recovery-disabled-reason">
-                          Rearranging other
-                          classes cannot
-                          resolve all blockers.{" "}
-                          {formatViolationNice(
-                            lecturerUnavailableViolation,
-                          )}
-                          .
-                        </span>
-                      ) : (
-                        <span className="recovery-disabled-reason">
-                          Choose concrete
-                          values above first
-                          so we can check
-                          whether rearranging
-                          can help.
-                        </span>
-                      )}
-                    </div>
-                  </button>
-
-
-                  {selectedRecoveryOption ===
-                    "rearrange" &&
-                    canRearrange && (
-                    <div className="recovery-expanded rearrange-expanded">
-                      <div className="recovery-expanded-heading">
-                        <h5>
-                          How much can the
-                          timetable change?
-                        </h5>
-
-                        <p>
-                          Keep this request
-                          fixed and choose how
-                          much disruption the
-                          system may introduce
-                          elsewhere.
-                        </p>
-                      </div>
-
-
-                      <div className="rearrange-choice-list">
-                        <label
-                          className={`rearrange-choice ${
-                            rearrangeMode ===
-                            "minimal"
-                              ? "selected"
-                              : ""
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="rearrange-mode"
-                            value="minimal"
-                            checked={
-                              rearrangeMode ===
-                              "minimal"
-                            }
-                            onChange={() =>
-                              setRearrangeMode(
-                                "minimal",
-                              )
-                            }
-                          />
-
-                          <div className="rearrange-choice-copy">
-                            <strong>
-                              Minimal disruption
-                            </strong>
-
-                            <span>
-                              Move as little as
-                              possible. (DOESNT WORK CURRENTLY)
-                            </span>
-                          </div>
-                        </label>
-
-
-                        <label
-                          className={`rearrange-choice ${
-                            rearrangeMode ===
-                            "limit"
-                              ? "selected"
-                              : ""
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="rearrange-mode"
-                            value="limit"
-                            checked={
-                              rearrangeMode ===
-                              "limit"
-                            }
-                            onChange={() =>
-                              setRearrangeMode(
-                                "limit",
-                              )
-                            }
-                          />
-
-                          <div className="rearrange-choice-copy">
-                            <strong>
-                              Allow up to a set
-                              number of changes
-                            </strong>
-
-                            <span>
-                              Set the maximum
-                              number of
-                              additional time
-                              or room changes
-                              the system may
-                              make.
-                            </span>
-
-
-                            <div
-                              className={`rearrange-limit-control ${
-                                rearrangeMode !==
-                                "limit"
-                                  ? "disabled"
-                                  : ""
-                              }`}
-                            >
-                              <span>
-                                Allow up to
-                              </span>
-
-                              <input
-                                type="number"
-                                min={1}
-                                max={20}
-                                value={
-                                  maxAdditionalChanges
-                                }
-                                disabled={
-                                  rearrangeMode !==
-                                  "limit"
-                                }
-                                onChange={(
-                                  event,
-                                ) => {
-                                  const next =
-                                    Number(
-                                      event
-                                        .target
-                                        .value,
-                                    );
-
-                                  if (
-                                    Number.isNaN(
-                                      next,
-                                    )
-                                  ) {
-                                    return;
-                                  }
-
-                                  setMaxAdditionalChanges(
-                                    Math.min(
-                                      20,
-                                      Math.max(
-                                        1,
-                                        next,
-                                      ),
-                                    ),
-                                  );
-                                }}
-                              />
-
-                              <span>
-                                additional
-                                changes
-                              </span>
-                            </div>
-                          </div>
-                        </label>
-                      </div>
-
-
-                      <div className="rearrange-notice">
-                        <strong>
-                          All constraints stay
-                          enforced.
-                        </strong>
-
-                        <span>
-                          A change means
-                          changing the time or
-                          room of another
-                          class. Lecturers
-                          will not be changed.
-                        </span>
-                      </div>
-
-
-                      <div className="recovery-actions">
-                        <button
-                          type="button"
-                          className="find-rearrangements-button"
-                          onClick={() => {
-                            if (
-                              rearrangeMode !==
-                              "limit"
-                            ) {
-                              return;
-                            }
-
-                            onFindRearrangements(
-                              maxAdditionalChanges,
-                            );
-                          }}
-                          disabled={
-                            rearrangeMode !==
-                              "limit" ||
-                            maxAdditionalChanges <
-                              1 ||
-                            solverLoading
-                          }
-                        >
-                          Find rearrangements
-                          <ArrowRight
-                            size={16}
-                          />
-                        </button>
+                      <div
+                        style={{
+                          marginTop: "4px",
+                          color: "#374151",
+                        }}
+                      >
+                        {formatViolationNice(firstUnrelaxableViolation)}. This
+                        constraint cannot be relaxed.
                       </div>
                     </div>
                   )}
-                </div>
 
-
-                {/* OPTION 3 */}
-
-                <div
-                  className={`recovery-option ${
-                    selectedRecoveryOption ===
-                    "relax"
-                      ? "selected"
-                      : ""
-                  } ${
-                    !canRelax
-                      ? "disabled"
-                      : ""
-                  }`}
-                >
-                  <button
-                    type="button"
-                    className="recovery-option-button"
-                    onClick={() =>
-                      canRelax &&
-                      toggleRecoveryOption(
-                        "relax",
-                      )
-                    }
-                    aria-expanded={
-                      selectedRecoveryOption ===
-                      "relax"
-                    }
-                    disabled={!canRelax}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                      gap: "14px",
+                      marginTop: "18px",
+                    }}
                   >
-                    <div className="recovery-option-icon">
-                      <SlidersHorizontal
-                        size={20}
-                      />
-                    </div>
+                    {/* LEFT — RELAXATION ONLY */}
+                    <div
+                      className={`recovery-option ${!canRelax ? "disabled" : ""}`}
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        minHeight: "260px",
+                        padding: "18px",
+                      }}
+                    >
+                      <div className="recovery-option-icon">
+                        <SlidersHorizontal size={20} />
+                      </div>
 
-
-                    <div className="recovery-option-copy">
-                      <div className="recovery-option-title-row">
+                      <div style={{ marginTop: "14px" }}>
                         <div className="recovery-title-with-status">
-                          <h4>
-                            Relax constraints
-                          </h4>
+                          <h4>Relax constraints only</h4>
 
                           {!canRelax && (
                             <span className="recovery-unavailable-badge">
@@ -2080,209 +1837,1091 @@ export function Step4Solution({
                           )}
                         </div>
 
-                        {canRelax &&
-                          (selectedRecoveryOption ===
-                          "relax" ? (
-                            <ChevronUp
-                              size={18}
-                            />
-                          ) : (
-                            <ChevronDown
-                              size={18}
-                            />
-                          ))}
+                        <p>
+                          Keep the rest of the timetable unchanged and relax the
+                          constraints blocking this request.
+                        </p>
+
+                        {canRelax ? (
+                          <div style={{ marginTop: "12px" }}>
+                            <strong>Constraints to relax:</strong>
+                            <ul
+                              style={{
+                                margin: "8px 0 0",
+                                paddingLeft: "20px",
+                              }}
+                            >
+                              {activeViolations.map((violation, index) => (
+                                <li
+                                  key={`${violation.type}-${index}`}
+                                  style={{ marginBottom: "4px" }}
+                                >
+                                  {formatViolationNice(violation)}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : firstUnrelaxableViolation ? (
+                          <span className="recovery-disabled-reason">
+                            Relaxation alone cannot resolve this request.{" "}
+                            {formatViolationNice(firstUnrelaxableViolation)} is
+                            unrelaxable.
+                          </span>
+                        ) : (
+                          <span className="recovery-disabled-reason">
+                            No relaxation-only recovery is available.
+                          </span>
+                        )}
                       </div>
 
-                      <p>
-                        Keep this request and
-                        allow selected
-                        scheduling constraints
-                        to be relaxed.
-                      </p>
-
-                      {canRelax ? (
-                        <span className="recovery-protection">
-                          All current blockers
-                          are relaxable.
-                        </span>
-                      ) : firstUnrelaxableViolation ? (
-                        <span className="recovery-disabled-reason">
-                          This route cannot
-                          resolve all blockers.{" "}
-                          {formatViolationNice(
-                            firstUnrelaxableViolation,
-                          )}{" "}
-                          is an unrelaxable
-                          constraint.
-                        </span>
-                      ) : (
-                        <span className="recovery-disabled-reason">
-                          Choose concrete
-                          values above first
-                          so we can check
-                          which constraints
-                          are blocking the
-                          request.
-                        </span>
-                      )}
+                      <div style={{ marginTop: "auto", paddingTop: "20px" }}>
+                        <button
+                          type="button"
+                          className="retry-with-relaxations-button"
+                          disabled={
+                            !canRelax ||
+                            solverLoading ||
+                            temporaryDeactivations.length === 0
+                          }
+                          onClick={() =>
+                            onRetryWithRelaxations(temporaryDeactivations)
+                          }
+                          style={{
+                            background: canRelax ? "#2563eb" : undefined,
+                            color: canRelax ? "#ffffff" : undefined,
+                            borderColor: canRelax ? "#2563eb" : undefined,
+                          }}
+                        >
+                          Accept recovery
+                          <ArrowRight size={16} />
+                        </button>
+                      </div>
                     </div>
-                  </button>
 
+                    {/* MIDDLE — MIXED RECOVERY */}
+                    <div
+                      className={`recovery-option ${!canMixedRecovery ? "disabled" : ""}`}
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        minHeight: "260px",
+                        padding: "18px",
+                      }}
+                    >
+                      <div className="recovery-option-icon">
+                        <SlidersHorizontal size={20} />
+                      </div>
 
-                  {selectedRecoveryOption ===
-                    "relax" &&
-                    canRelax && (
-                    <>
-                      <div className="recovery-expanded relax-expanded">
-
-                        <div className="recovery-expanded-heading">
-                          <h5>
-                            Temporarily
-                            deactivate blocking
-                            constraints
-                          </h5>
-
-                          <p>
-                            To retry this
-                            request, the
-                            following
-                            constraints would
-                            need to be
-                            deactivated for
-                            this rescheduling
-                            attempt.
-                          </p>
-
-
-                        </div>
-
-
-                        <div className="temporary-relaxation-list">
-                          {activeViolations.map(
-                            (
-                              violation,
-                              index,
-                            ) => {
-                              const historicalConfig =
-                                getHistoricalImpactConfig(
-                                  violation,
-                                );
-
-                              const historicalKey =
-                                historicalConfig
-                                  ? getHistoricalImpactKey(
-                                      historicalConfig.stakeholderType,
-                                      historicalConfig.impactType,
-                                    )
-                                  : null;
-
-                              const historicalImpacts =
-                                historicalKey
-                                  ? historicalImpactsByKey[
-                                      historicalKey
-                                    ] ?? []
-                                  : [];
-
-                              return (
-                                <div
-                                  key={`${violation.type}-${index}`}
-                                  className="temporary-relaxation-item"
-                                >
-                                  <div className="temporary-relaxation-header">
-                                    <div>
-                                      <div className="temporary-relaxation-title">
-                                        {getConstraintLabel(
-                                          violation.type,
-                                        )}
-                                      </div>
-
-                                      <div className="temporary-relaxation-detail">
-                                        {formatViolationNice(
-                                          violation,
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    <span className="temporary-badge">
-                                      Temporary
-                                    </span>
-                                  </div>
-
-                                  {historicalConfig &&
-                                    historicalImpacts.length >
-                                      0 && (
-                                      <div className="temporary-relaxation-history">
-                                        <HistoricalImpactSummary
-                                          impactType={
-                                            historicalConfig.impactType
-                                          }
-                                          stakeholderType={
-                                            historicalConfig.stakeholderType
-                                          }
-                                          impacts={
-                                            historicalImpacts
-                                          }
-                                          highlightStakeholderId={
-                                            historicalConfig.highlightStakeholderId
-                                          }
-                                        />
-                                      </div>
-                                    )}
-                                </div>
-                              );
-                            },
+                      <div style={{ marginTop: "14px" }}>
+                        <div className="recovery-title-with-status">
+                          <h4>Mixed recovery</h4>
+                          {!canMixedRecovery && (
+                            <span className="recovery-unavailable-badge">
+                              Not available
+                            </span>
                           )}
                         </div>
 
+                        <p>
+                          Allow some timetable changes and some constraint
+                          relaxations.
+                        </p>
 
-                        <div className="temporary-relaxation-notice">
-                          <strong>
-                            Only for this
-                            request.
-                          </strong>
-
-                          <span>
-                            These constraints
-                            would remain active
-                            in your global
-                            constraint settings
-                            and for future
-                            scheduling
-                            attempts.
+                        {canMixedRecovery ? (
+                          <span className="recovery-protection">
+                            You decide what the system is allowed to change.
                           </span>
-                        </div>
-
-
-                        <div className="recovery-actions">
-                          <button
-                            type="button"
-                            className="retry-with-relaxations-button"
-                            onClick={() =>
-                              onRetryWithRelaxations(
-                                temporaryDeactivations,
-                              )
-                            }
-                            disabled={
-                              temporaryDeactivations.length ===
-                                0 ||
-                              solverLoading
-                            }
-                          >
-                            Try again with
-                            constraints
-                            deactivated
-
-                            <ArrowRight
-                              size={16}
-                            />
-                          </button>
-                        </div>
-
+                        ) : (
+                          <span className="recovery-disabled-reason">
+                            The current blocker cannot be resolved here.
+                          </span>
+                        )}
                       </div>
-                    </>
-                  )}
-                </div>
-              </div>
+
+                      <div style={{ marginTop: "auto", paddingTop: "20px" }}>
+                       <button
+                          type="button"
+                          className="find-rearrangements-button"
+                          disabled={!canMixedRecovery || solverLoading}
+                          onClick={async () => {
+                              if (!mixedRecoveryOpen) {
+                                await loadRelaxableConstraints();
+                              }
+
+                              setMixedRecoveryOpen((open) => !open);
+                            }}
+                            >
+                          {mixedRecoveryOpen
+                            ? "Close configuration"
+                            : "Configure recovery"}
+
+                          {mixedRecoveryOpen ? (
+                            <ChevronUp size={16} />
+                          ) : (
+                            <ArrowRight size={16} />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* RIGHT — PERTURBATION ONLY */}
+                    <div
+                      className={`recovery-option ${!canRearrange ? "disabled" : ""}`}
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        minHeight: "260px",
+                        padding: "18px",
+                      }}
+                    >
+                      <div className="recovery-option-icon">
+                        <RefreshCw size={20} />
+                      </div>
+
+                      <div style={{ marginTop: "14px" }}>
+                        <div className="recovery-title-with-status">
+                          <h4>Perturbations only</h4>
+
+                          {!canRearrange && (
+                            <span className="recovery-unavailable-badge">
+                              Not available
+                            </span>
+                          )}
+                        </div>
+
+                        <p>
+                          Keep all constraints enforced and move other classes to
+                          make this request possible.
+                        </p>
+
+                        {canRearrange ? (
+                          <>
+                            <span className="recovery-protection">
+                              No constraints will be relaxed.
+                            </span>
+
+                            {minimumPerturbations !== null && !perturbationPreview && (
+                              <p style={{ marginTop: "10px" }}>
+                                Minimum additional classes affected:{" "}
+                                <strong>{minimumPerturbations}</strong>
+                              </p>
+                            )}
+
+                        {perturbationPreview?.status === "feasible" &&
+                          perturbationPreview.additional_changes &&
+                          perturbationPreview.additional_changes.length > 0 && (
+                            <div
+                              style={{
+                                marginTop: "18px",
+                                paddingTop: "16px",
+                                borderTop: "1px solid #d9e0ea",
+                              }}
+                            >
+                              <strong
+                                style={{
+                                  display: "block",
+                                  fontSize: "16px",
+                                  marginBottom: "16px",
+                                }}
+                              >
+                                Proposed rearrangement
+                              </strong>
+
+                              {/* PRIMARY CHANGE */}
+                              <div
+                                style={{
+                                  padding: "14px",
+                                  border: "1px solid #c7d2fe",
+                                  borderRadius: "10px",
+                                  background: "#f8faff",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    fontSize: "12px",
+                                    fontWeight: 700,
+                                    color: "#4f46e5",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.04em",
+                                    marginBottom: "6px",
+                                  }}
+                                >
+                                  Primary change · Your request
+                                </div>
+
+                                <strong>
+                                  {selectedModuleLabel ?? selectedEventFallbackId}
+                                </strong>
+
+                                {/* TIME */}
+                                <div style={{ marginTop: "12px" }}>
+                                  <div
+                                    style={{
+                                      fontSize: "12px",
+                                      fontWeight: 600,
+                                      color: "#64748b",
+                                    }}
+                                  >
+                                    Time
+                                  </div>
+
+                                  <div>
+                                    {selectedEventDayTime ?? "—"}
+                                    {" → "}
+                                    {requestedTimeLabel}
+                                  </div>
+                                </div>
+
+                                {/* ROOM */}
+                                <div style={{ marginTop: "8px" }}>
+                                  <div
+                                    style={{
+                                      fontSize: "12px",
+                                      fontWeight: 600,
+                                      color: "#64748b",
+                                    }}
+                                  >
+                                    Room
+                                  </div>
+
+                                  <div>
+                                    {selectedEventRoom ?? "—"}
+                                    {" → "}
+                                    {requestedRoomLabel}
+                                  </div>
+                                </div>
+
+                                {/* LECTURER */}
+                                <div style={{ marginTop: "8px" }}>
+                                  <div
+                                    style={{
+                                      fontSize: "12px",
+                                      fontWeight: 600,
+                                      color: "#64748b",
+                                    }}
+                                  >
+                                    Lecturer
+                                  </div>
+
+                                  <div>
+                                    {selectedEventLecturerName ?? "—"}
+                                    {" → "}
+                                    {requestedLecturerLabel}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* ADDITIONAL CHANGES */}
+                              <div
+                                style={{
+                                  marginTop: "18px",
+                                  paddingTop: "16px",
+                                  borderTop: "1px solid #e5e7eb",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    fontSize: "12px",
+                                    fontWeight: 700,
+                                    color: "#64748b",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.04em",
+                                  }}
+                                >
+                                  Additional changes
+                                </div>
+
+                                <p style={{ margin: "6px 0 0" }}>
+                                  {perturbationPreview.additional_changes.length} other{" "}
+                                  {perturbationPreview.additional_changes.length === 1
+                                    ? "class must be moved"
+                                    : "classes must be moved"}{" "}
+                                  to make your request possible.
+                                </p>
+
+                                {perturbationPreview.additional_changes.map((change) => {
+                                  const session = getAdditionalChangeSession(
+                                    change.session_id,
+                                  );
+
+                                  return (
+                                    <div
+                                    key={change.session_id}
+                                    style={{
+                                          marginTop: "14px",
+                                          padding: "14px",
+                                          border: "1px solid #f3d69a",
+                                          borderRadius: "10px",
+                                          background: "#fff8e6",
+                                        }}
+                                    >
+                                   <div>
+                                                      <strong
+                                                        style={{
+                                                          display: "block",
+                                                          fontSize: "16px",
+                                                        }}
+                                                      >
+                                                        {getAdditionalChangeSessionLabel(
+                                                          change.session_id,
+                                                        )}
+                                                      </strong>
+
+                                                      {session && (
+                                                        <div
+                                                          style={{
+                                                            marginTop: "6px",
+                                                            fontSize: "13px",
+                                                            color: "#64748b",
+                                                          }}
+                                                        >
+                                                          <div>
+                                                            <strong>Lecturer:</strong>{" "}
+                                                            {getLecturerName(session.lecturerId)}
+                                                          </div>
+
+                                                          {session.room && (
+                                                            <div>
+                                                              <strong>Current room:</strong>{" "}
+                                                              {session.room}
+                                                            </div>
+                                                          )}
+                                                        </div>
+                                                      )}
+                                                    </div>
+
+                                    {change.time_changed && (
+                                      <div style={{ marginTop: "10px" }}>
+                                        <div
+                                          style={{
+                                            fontSize: "12px",
+                                            fontWeight: 600,
+                                            color: "#64748b",
+                                          }}
+                                        >
+                                          Time
+                                        </div>
+
+                                        <div>
+                                          {DAY_LABELS[
+                                            change.old_day
+                                              .slice(0, 3)
+                                              .toLowerCase()
+                                          ] ?? change.old_day}{" "}
+                                          {change.old_time}
+                                          {" → "}
+                                          {DAY_LABELS[
+                                            change.new_day
+                                              .slice(0, 3)
+                                              .toLowerCase()
+                                          ] ?? change.new_day}{" "}
+                                          {change.new_time}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {change.room_changed && (
+                                      <div style={{ marginTop: "8px" }}>
+                                        <div
+                                          style={{
+                                            fontSize: "12px",
+                                            fontWeight: 600,
+                                            color: "#64748b",
+                                          }}
+                                        >
+                                          Room
+                                        </div>
+
+                                        <div>
+                                          {getRoomName(change.old_room_id)}
+                                          {" → "}
+                                          {getRoomName(change.new_room_id)}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                  );
+                                })}
+
+                                <p
+                                  style={{
+                                    marginTop: "14px",
+                                    marginBottom: 0,
+                                    fontSize: "13px",
+                                    color: "#64748b",
+                                  }}
+                                >
+                                  No constraints are relaxed. Lecturers of additional
+                                  classes remain unchanged.
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                          </>
+                        ) : (
+                          <span className="recovery-disabled-reason">
+                            No perturbation-only solution exists while keeping
+                            all active constraints enforced.
+                          </span>
+                        )}
+                      </div>
+
+                        {!perturbationPreview && (
+                          <div style={{ marginTop: "auto", paddingTop: "20px" }}>
+                            <button
+                              type="button"
+                              className="find-rearrangements-button"
+                              disabled={!canRearrange || solverLoading}
+                              onClick={onFindRearrangements}
+                            >
+                              Find rearrangement
+                              <ArrowRight size={16} />
+                            </button>
+                          </div>
+                        )}
+                    </div>
+                  </div>
+
+
+                  {mixedRecoveryOpen && (
+                      <div
+                        style={{
+                          marginTop: "14px",
+                          padding: "22px",
+                          background: "#f8fafc",
+                          border: "1px solid #d9e0ea",
+                          borderRadius: "12px",
+                        }}
+                      >
+                        {/* PERTURBATION LIMIT */}
+
+                        <div>
+                          <div
+                            style={{
+                              fontSize: "12px",
+                              fontWeight: 700,
+                              color: "#64748b",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                            }}
+                          >
+                            Perturbation limit
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: "12px",
+                              fontWeight: 600,
+                            }}
+                          >
+                            Maximum additional classes that may be moved
+                          </div>
+
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "10px",
+                              marginTop: "10px",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setMixedPerturbationLimit((value) =>
+                                  Math.max(0, value - 1)
+                                )
+                              }
+                            >
+                              −
+                            </button>
+
+                            <strong
+                              style={{
+                                minWidth: "32px",
+                                textAlign: "center",
+                              }}
+                            >
+                              {mixedPerturbationLimit}
+                            </strong>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setMixedPerturbationLimit((value) => value + 1)
+                              }
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+
+                        <div
+                          style={{
+                            margin: "22px 0",
+                            borderTop: "1px solid #d9e0ea",
+                          }}
+                        />
+
+                        {/* CONSTRAINT RELAXATIONS */}
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+                            gap: "32px",
+                            alignItems: "start",
+                          }}
+                        >
+                          {/* LEFT — CONSTRAINT PICKER */}
+                          <div>
+                            <div
+                              style={{
+                                fontSize: "12px",
+                                fontWeight: 700,
+                                color: "#64748b",
+                                textTransform: "uppercase",
+                                letterSpacing: "0.05em",
+                              }}
+                            >
+                              Constraints allowed to relax
+                            </div>
+
+                            <p
+                              style={{
+                                margin: "6px 0 0",
+                                color: "#64748b",
+                              }}
+                            >
+                              Select constraints the solver may relax if needed.
+                            </p>
+
+                            <div
+                              style={{
+                                marginTop: "12px",
+                                width: "100%",
+                              }}
+                            >
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setAllowedRelaxationsOpen((open) => !open)
+                                }
+                                style={{
+                                  width: "100%",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  padding: "10px 12px",
+                                  background: "#ffffff",
+                                  border: "1px solid #d9e0ea",
+                                  borderRadius: "8px",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                <span>
+                                  {allowedRelaxationIds.length} of{" "}
+                                  {allRelaxableConstraints.length} constraints allowed to relax
+                                </span>
+
+                                {allowedRelaxationsOpen ? (
+                                  <ChevronUp size={16} />
+                                ) : (
+                                  <ChevronDown size={16} />
+                                )}
+                              </button>
+
+                              {allowedRelaxationsOpen && (
+                                <div
+                                  style={{
+                                    marginTop: "6px",
+                                    padding: "6px",
+                                    background: "#ffffff",
+                                    border: "1px solid #d9e0ea",
+                                    borderRadius: "8px",
+                                    maxHeight: "320px",
+                                    overflowY: "auto",
+                                  }}
+                                >
+                                  {allRelaxableConstraints.map((constraint) => {
+                                    const checked =
+                                      allowedRelaxationIds.includes(
+                                        constraint.instance_id,
+                                      );
+
+                                    return (
+                                      <label
+                                        key={constraint.instance_id}
+                                        style={{
+                                          display: "flex",
+                                          alignItems: "flex-start",
+                                          gap: "10px",
+                                          padding: "9px",
+                                          cursor: "pointer",
+                                        }}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={() => {
+                                            setAllowedRelaxationIds((current) =>
+                                              checked
+                                                ? current.filter(
+                                                    (id) =>
+                                                      id !== constraint.instance_id,
+                                                  )
+                                                : [
+                                                    ...current,
+                                                    constraint.instance_id,
+                                                  ],
+                                            );
+                                          }}
+                                        />
+
+                                        <span>
+                                          <strong>
+                                            {constraint.constraint_name}
+                                          </strong>
+
+                                          <span
+                                            style={{
+                                              display: "block",
+                                              marginTop: "2px",
+                                              fontSize: "12px",
+                                              color: "#64748b",
+                                            }}
+                                          >
+                                            {constraint.stakeholder_name}
+                                            {constraint.day
+                                              ? ` · ${
+                                                  DAY_LABELS[constraint.day] ??
+                                                  constraint.day
+                                                }`
+                                              : ""}
+                                          </span>
+                                        </span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* RIGHT — RELAXATIONS PERMITTED */}
+                          <div
+                            style={{
+                              padding: "16px",
+                              border: "1px solid #f3d69a",
+                              borderRadius: "10px",
+                              background: "#fff8e6",
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: "12px",
+                                fontWeight: 700,
+                                color: "#92400e",
+                                textTransform: "uppercase",
+                                letterSpacing: "0.05em",
+                              }}
+                            >
+                              Relaxations permitted
+                            </div>
+
+                            <div
+                              style={{
+                                marginTop: "6px",
+                                fontSize: "14px",
+                                fontWeight: 600,
+                              }}
+                            >
+                              {selectedAllowedRelaxations.length} selected
+                            </div>
+
+                            {selectedAllowedRelaxations.length === 0 ? (
+                              <p
+                                style={{
+                                  margin: "8px 0 0",
+                                  color: "#64748b",
+                                }}
+                              >
+                                No constraint relaxations are currently permitted.
+                                All constraints will remain enforced.
+                              </p>
+                            ) : (
+                              <>
+                                <p
+                                  style={{
+                                    margin: "8px 0 0",
+                                    color: "#64748b",
+                                  }}
+                                >
+                                  The solver may relax the following constraints if
+                                  needed to find a solution. All other constraints
+                                  will remain enforced.
+                                </p>
+
+                                <div style={{ marginTop: "12px" }}>
+                                  {selectedAllowedRelaxations.map((constraint) => (
+                                    <div
+                                      key={`permitted-${constraint.instance_id}`}
+                                      style={{
+                                        padding: "10px 0",
+                                        borderTop: "1px solid #f3d69a",
+                                      }}
+                                    >
+                                      <strong>
+                                        {constraint.constraint_name}
+                                      </strong>
+
+                                      <div
+                                        style={{
+                                          marginTop: "2px",
+                                          fontSize: "13px",
+                                          color: "#64748b",
+                                        }}
+                                      >
+                                        {constraint.stakeholder_name}
+                                        {constraint.day
+                                          ? ` · ${
+                                              DAY_LABELS[constraint.day] ??
+                                              constraint.day
+                                            }`
+                                          : ""}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                <div
+                                  style={{
+                                    marginTop: "12px",
+                                    padding: "10px 12px",
+                                    borderRadius: "8px",
+                                    background: "#fffbeb",
+                                    fontSize: "13px",
+                                    color: "#78350f",
+                                  }}
+                                >
+                                  Selecting a constraint does not mean it will
+                                  definitely be relaxed. It only gives the solver
+                                  permission to relax it if needed.
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                          <div
+                            style={{
+                              marginTop: "18px",
+                              display: "flex",
+                              justifyContent: "flex-end",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              className="find-rearrangements-button"
+                              disabled={
+                                mixedRecoveryLoading ||
+                                !canMixedRecovery
+                              }
+                              onClick={findMixedRecoverySolution}
+                            >
+                              {mixedRecoveryLoading
+                                ? "Finding solution…"
+                                : "Find best solution"}
+                              {!mixedRecoveryLoading && (
+                                <ArrowRight size={16} />
+                              )}
+                            </button>
+                          </div>
+
+                          {mixedRecoveryError && (
+                            <div
+                              style={{
+                                marginTop: "14px",
+                                padding: "12px 14px",
+                                border: "1px solid #f0b8b8",
+                                borderRadius: "8px",
+                                background: "#fff7f7",
+                                color: "#9f2929",
+                              }}
+                            >
+                              {mixedRecoveryError}
+                            </div>
+                          )}
+
+                          {mixedRecoveryResult?.status === "infeasible" && (
+                            <div
+                              style={{
+                                marginTop: "14px",
+                                padding: "14px",
+                                border: "1px solid #f0b8b8",
+                                borderRadius: "10px",
+                                background: "#fff7f7",
+                              }}
+                            >
+                              <strong>No mixed recovery solution found.</strong>
+                              <div style={{ marginTop: "4px", color: "#64748b" }}>
+                                {mixedRecoveryResult.reason ??
+                                  "Try allowing more perturbations or permitting additional relaxations."}
+                              </div>
+                            </div>
+                          )}
+
+                          {mixedRecoveryResult?.status === "feasible" && (
+                            <div
+                              style={{
+                                marginTop: "20px",
+                                paddingTop: "20px",
+                                borderTop: "1px solid #d9e0ea",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: "12px",
+                                  fontWeight: 700,
+                                  color: "#64748b",
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.05em",
+                                }}
+                              >
+                                Mixed recovery solution
+                              </div>
+
+                              {/* PRIMARY REQUEST */}
+                              <div
+                                style={{
+                                  marginTop: "12px",
+                                  padding: "14px",
+                                  border: "1px solid #c7d2fe",
+                                  borderRadius: "10px",
+                                  background: "#f8faff",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    fontSize: "12px",
+                                    fontWeight: 700,
+                                    color: "#4f46e5",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.04em",
+                                    marginBottom: "6px",
+                                  }}
+                                >
+                                  Primary change · Your request
+                                </div>
+
+                                <strong>
+                                  {selectedModuleLabel ?? selectedEventFallbackId}
+                                </strong>
+
+                                <div style={{ marginTop: "10px" }}>
+                                  <strong>Time:</strong>{" "}
+                                  {selectedEventDayTime ?? "—"} →{" "}
+                                  {mixedRecoveryResult.day
+                                    ? `${
+                                        DAY_LABELS[
+                                          mixedRecoveryResult.day
+                                            .slice(0, 3)
+                                            .toLowerCase()
+                                        ] ?? mixedRecoveryResult.day
+                                      } ${mixedRecoveryResult.time ?? ""}`
+                                    : requestedTimeLabel}
+                                </div>
+
+                                <div style={{ marginTop: "6px" }}>
+                                  <strong>Room:</strong>{" "}
+                                  {selectedEventRoom ?? "—"} →{" "}
+                                  {mixedRecoveryResult.room_id
+                                    ? getRoomName(mixedRecoveryResult.room_id)
+                                    : requestedRoomLabel}
+                                </div>
+
+                                <div style={{ marginTop: "6px" }}>
+                                  <strong>Lecturer:</strong>{" "}
+                                  {selectedEventLecturerName ?? "—"} →{" "}
+                                  {mixedRecoveryResult.lecturer_id
+                                    ? getLecturerName(
+                                        mixedRecoveryResult.lecturer_id,
+                                      )
+                                    : requestedLecturerLabel}
+                                </div>
+                              </div>
+
+                              {/* PERTURBATIONS */}
+                              <div
+                                style={{
+                                  marginTop: "16px",
+                                  padding: "14px",
+                                  border: "1px solid #f3d69a",
+                                  borderRadius: "10px",
+                                  background: "#fff8e6",
+                                }}
+                              >
+                                <strong>
+                                  Additional classes moved ·{" "}
+                                  {mixedRecoveryResult.perturbation_count ?? 0} of{" "}
+                                  {mixedPerturbationLimit} permitted
+                                </strong>
+
+                                {(mixedRecoveryResult.additional_changes?.length ??
+                                  0) === 0 ? (
+                                  <p style={{ margin: "8px 0 0", color: "#64748b" }}>
+                                    No other classes needed to move.
+                                  </p>
+                                ) : (
+                                  mixedRecoveryResult.additional_changes!.map(
+                                    (change) => (
+                                      <div
+                                        key={change.session_id}
+                                        style={{
+                                          marginTop: "12px",
+                                          paddingTop: "12px",
+                                          borderTop: "1px solid #f3d69a",
+                                        }}
+                                      >
+                                        <strong>
+                                          {getAdditionalChangeSessionLabel(
+                                            change.session_id,
+                                          )}
+                                        </strong>
+
+                                        {change.time_changed && (
+                                          <div style={{ marginTop: "6px" }}>
+                                            Time:{" "}
+                                            {DAY_LABELS[
+                                              change.old_day
+                                                .slice(0, 3)
+                                                .toLowerCase()
+                                            ] ?? change.old_day}{" "}
+                                            {change.old_time} →{" "}
+                                            {DAY_LABELS[
+                                              change.new_day
+                                                .slice(0, 3)
+                                                .toLowerCase()
+                                            ] ?? change.new_day}{" "}
+                                            {change.new_time}
+                                          </div>
+                                        )}
+
+                                        {change.room_changed && (
+                                          <div style={{ marginTop: "4px" }}>
+                                            Room:{" "}
+                                            {getRoomName(change.old_room_id)} →{" "}
+                                            {getRoomName(change.new_room_id)}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ),
+                                  )
+                                )}
+                              </div>
+
+                              {/* ACTUAL RELAXATIONS USED */}
+                              <div
+                                style={{
+                                  marginTop: "16px",
+                                  padding: "14px",
+                                  border: "1px solid #f3d69a",
+                                  borderRadius: "10px",
+                                  background: "#fffbeb",
+                                }}
+                              >
+                                <strong>
+                                  Constraint relaxations used ·{" "}
+                                  {mixedRecoveryResult.relaxation_count ?? 0}
+                                </strong>
+
+                                {(mixedRecoveryResult.used_relaxations?.length ??
+                                  0) === 0 ? (
+                                  <p style={{ margin: "8px 0 0", color: "#64748b" }}>
+                                    None of the permitted relaxations were needed.
+                                  </p>
+                                ) : (
+                                  mixedRecoveryResult.used_relaxations!.map(
+                                    (relaxation, index) => {
+                                      const matchingConstraint =
+                                        allRelaxableConstraints.find(
+                                          (constraint) =>
+                                            constraint.constraint_id ===
+                                              relaxation.constraint_id &&
+                                            constraint.instance_type ===
+                                              relaxation.instance_type &&
+                                            constraint.stakeholder_id ===
+                                              relaxation.instance_id &&
+                                            constraint.day === relaxation.day,
+                                        );
+
+                                      return (
+                                        <div
+                                          key={`${relaxation.constraint_id}-${relaxation.instance_id}-${relaxation.day ?? "all"}-${index}`}
+                                          style={{
+                                            marginTop: "10px",
+                                            paddingTop: "10px",
+                                            borderTop: "1px solid #f3d69a",
+                                          }}
+                                        >
+                                          <strong>
+                                            {matchingConstraint?.constraint_name ??
+                                              getTemporaryConstraintLabel(
+                                                relaxation.constraint_id,
+                                              )}
+                                          </strong>
+                                          <div
+                                            style={{
+                                              marginTop: "2px",
+                                              fontSize: "13px",
+                                              color: "#64748b",
+                                            }}
+                                          >
+                                            {matchingConstraint?.stakeholder_name ??
+                                              relaxation.instance_id}
+                                            {relaxation.day
+                                              ? ` · ${
+                                                  DAY_LABELS[relaxation.day] ??
+                                                  relaxation.day
+                                                }`
+                                              : ""}
+                                          </div>
+                                        </div>
+                                      );
+                                    },
+                                  )
+                                )}
+                              </div>
+
+                              <p
+                                style={{
+                                  margin: "12px 0 0",
+                                  fontSize: "13px",
+                                  color: "#64748b",
+                                }}
+                              >
+                                Only relaxations actually used by the final
+                                solution are shown above.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                    )}
+                  <div
+                    style={{
+                      marginTop: "16px",
+                      paddingTop: "14px",
+                      borderTop: "1px solid #d9e0ea",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="back-to-request-button"
+                      onClick={onBackToRequest}
+                    >
+                      Choose a different time, room, or lecturer
+                    </button>
+                  </div>
+                </>
               )}
             </section>
           </div>

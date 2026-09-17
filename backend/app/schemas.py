@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Literal
 from pydantic import BaseModel
 
+
 class WorkingSessionMoveIn(BaseModel):
     session_id: str
     new_start: datetime
@@ -276,3 +277,15 @@ class CandidateSolutionCreate(BaseModel):
     solve_settings: dict | None = None
     solver_metadata: dict | None = None
 
+
+class AllowedRelaxationIn(BaseModel):
+    constraint_id: str
+    instance_type: str
+    instance_id: str
+    day: str | None = None
+
+
+class MixedRecoveryRequestIn(BaseModel):
+    request: RescheduleRequestIn
+    max_perturbations: int
+    allowed_relaxations: list[AllowedRelaxationIn] = Field(default_factory=list)

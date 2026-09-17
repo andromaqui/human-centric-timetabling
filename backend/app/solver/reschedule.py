@@ -938,7 +938,7 @@ def solve_reschedule(request: RescheduleRequestIn, db):
         lecturer_vars,
         index_to_room_id,
         index_to_lecturer_id,
-        room_id_to_index
+        room_id_to_index,
     ) = build_solver_model(
         target_session,
         change_plan,
@@ -957,6 +957,10 @@ def solve_reschedule(request: RescheduleRequestIn, db):
     solver = cp_model.CpSolver()
     status = solver.Solve(model)
 
+    # ==============================================================
+    # Infeasible
+    # ==============================================================
+
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         print("status")
         print({status})
@@ -966,7 +970,10 @@ def solve_reschedule(request: RescheduleRequestIn, db):
                 proposed_start,
                 proposed_room_id,
                 proposed_lecturer_id,
-            ) = get_proposed_values(request, target_session)
+            ) = get_proposed_values(
+                request,
+                target_session,
+            )
 
             diagnostics = diagnose_specific_request(
                 db,
@@ -982,47 +989,121 @@ def solve_reschedule(request: RescheduleRequestIn, db):
             print("Proposed time:", proposed_start)
             print("Proposed room:", proposed_room_id)
             print("Proposed lecturer:", proposed_lecturer_id)
-            print("Overlapping sessions:", diagnostics["overlapping_sessions"])
+            print(
+                "Overlapping sessions:",
+                diagnostics["overlapping_sessions"],
+            )
+
             if diagnostics["violations"]:
                 for violation in diagnostics["violations"]:
                     print(violation)
             else:
-                print("No direct constraint violations found by the diagnostic checker.")
+                print(
+                    "No direct constraint violations found "
+                    "by the diagnostic checker."
+                )
+
             print("===============================================\n")
+
+            # ------------------------------------------------------
+            # Test perturbation-only recovery.
+            #
+            # The dedicated minimum-perturbation solver determines
+            # whether the concrete requested placement can be made
+            # feasible by moving other timetable sessions.
+            # ------------------------------------------------------
+
+            perturbation_result = solve_reschedule_min_perturbation(
+                request,
+                db,
+            )
+
+            can_perturb = (
+                perturbation_result.get("status")
+                == "feasible"
+            )
+
+            minimum_perturbations = None
+
+            if can_perturb:
+                minimum_perturbations = len(
+                    perturbation_result.get(
+                        "additional_changes",
+                        [],
+                    )
+                )
 
             return {
                 "status": "infeasible",
                 "reason": "No feasible solution found",
                 "diagnostics": diagnostics,
+                "recovery_options": {
+                    "can_perturb": can_perturb,
+                    "minimum_perturbations": (
+                        minimum_perturbations
+                    ),
+                },
             }
 
+        # FIND requests are not concrete, so there is no concrete
+        # requested placement for perturbation-only recovery.
         return {
             "status": "infeasible",
             "reason": "No feasible solution found",
             "diagnostics": None,
+            "recovery_options": {
+                "can_perturb": False,
+                "minimum_perturbations": None,
+            },
         }
+
+    # ==============================================================
+    # Feasible
+    # ==============================================================
 
     target_id = target_session.id
 
-    solved_start_slot = solver.Value(start_vars[target_id])
-    solved_time = slot_to_day_time(solved_start_slot)
+    solved_start_slot = solver.Value(
+        start_vars[target_id]
+    )
+
+    solved_time = slot_to_day_time(
+        solved_start_slot
+    )
 
     additional_changes = []
 
     for session in other_sessions:
-        solved_start = solver.Value(start_vars[session.id])
-        solved_room_index = solver.Value(room_vars[session.id])
+        solved_start = solver.Value(
+            start_vars[session.id]
+        )
 
-        original_start = datetime_to_slot(session.start)
-        original_room_index = room_id_to_index[session.room_id]
+        solved_room_index = solver.Value(
+            room_vars[session.id]
+        )
 
-        time_changed = solved_start != original_start
-        room_changed = solved_room_index != original_room_index
+        original_start = datetime_to_slot(
+            session.start
+        )
+
+        original_room_index = room_id_to_index[
+            session.room_id
+        ]
+
+        time_changed = (
+            solved_start != original_start
+        )
+
+        room_changed = (
+            solved_room_index != original_room_index
+        )
 
         if not time_changed and not room_changed:
             continue
 
-        solved_session_time = slot_to_day_time(solved_start)
+        solved_session_time = slot_to_day_time(
+            solved_start
+        )
 
         additional_changes.append({
             "session_id": session.id,
@@ -1030,14 +1111,25 @@ def solve_reschedule(request: RescheduleRequestIn, db):
             "time_changed": time_changed,
             "old_start_slot": original_start,
             "new_start_slot": solved_start,
-            "old_day": session.start.strftime("%A").lower(),
-            "old_time": session.start.strftime("%H:%M"),
+            "old_day": (
+                session.start
+                .strftime("%A")
+                .lower()
+            ),
+            "old_time": (
+                session.start
+                .strftime("%H:%M")
+            ),
             "new_day": solved_session_time["day"],
             "new_time": solved_session_time["time"],
 
             "room_changed": room_changed,
             "old_room_id": session.room_id,
-            "new_room_id": index_to_room_id[solved_room_index],
+            "new_room_id": (
+                index_to_room_id[
+                    solved_room_index
+                ]
+            ),
         })
 
     return {
@@ -1047,9 +1139,15 @@ def solve_reschedule(request: RescheduleRequestIn, db):
         "start_slot": solved_start_slot,
         "day": solved_time["day"],
         "time": solved_time["time"],
-        "room_id": index_to_room_id[solver.Value(room_vars[target_id])],
+        "room_id": index_to_room_id[
+            solver.Value(
+                room_vars[target_id]
+            )
+        ],
         "lecturer_id": index_to_lecturer_id[
-            solver.Value(lecturer_vars[target_id])
+            solver.Value(
+                lecturer_vars[target_id]
+            )
         ],
         "additional_changes": additional_changes,
     }
@@ -2109,3 +2207,1998 @@ def diagnose_working_day(db, day: str, working_sessions,):
 
 
 # endregion
+
+# region perturbations
+# ==================================================================
+# MINIMUM-PERTURBATION RESCHEDULING
+#
+# Behaviour:
+#
+# 1. Existing timetable must satisfy UNBREAKABLE constraints:
+#       - room overlap
+#       - lecturer overlap
+#       - lecturer unavailability
+#
+#    Otherwise:
+#       status = "corrupted"
+#
+# 2. Existing BREAKABLE violations are grandfathered:
+#       - class capacity
+#       - class equipment
+#       - lecturer daily hours
+#       - cohort daily hours
+#       - lecturer lunch break
+#
+# 3. No new breakable violations may be introduced.
+#
+# 4. Existing daily-hours violations may remain at their current
+#    severity, but cannot get worse.
+#
+# 5. Minimize the number of OTHER sessions changed.
+#
+# 6. Cascading changes may alter time/room, but NOT lecturer.
+# ==================================================================
+
+
+# ==================================================================
+# 1. CHECK CURRENT TIMETABLE FOR UNBREAKABLE CORRUPTION
+# ==================================================================
+
+def check_timetable_integrity(db):
+    """
+    Check CURRENT timetable against constraints that must NEVER
+    be violated.
+
+    Unbreakable:
+        - room overlap
+        - lecturer overlap
+        - lecturer unavailability
+
+    Returns:
+        None
+            if timetable is valid.
+
+        dict(status="corrupted", ...)
+            if an unbreakable violation already exists.
+    """
+
+    sessions = db.query(Session).all()
+    unavailability_rows = get_all_lecturer_unavailability(db)
+
+    violations = []
+
+    # --------------------------------------------------------------
+    # Room / lecturer overlap
+    # --------------------------------------------------------------
+
+    for i in range(len(sessions)):
+        for j in range(i + 1, len(sessions)):
+            a = sessions[i]
+            b = sessions[j]
+
+            a_start = datetime_to_slot(a.start)
+            a_end = a_start + get_duration_slots(a)
+
+            b_start = datetime_to_slot(b.start)
+            b_end = b_start + get_duration_slots(b)
+
+            overlaps = (
+                a_start < b_end
+                and b_start < a_end
+            )
+
+            if not overlaps:
+                continue
+
+            # Room overlap
+            if (
+                a.room_id is not None
+                and b.room_id is not None
+                and a.room_id == b.room_id
+            ):
+                violations.append({
+                    "type": "room_overlap",
+                    "room_id": a.room_id,
+                    "session_ids": sorted([
+                        a.id,
+                        b.id,
+                    ]),
+                })
+
+            # Lecturer overlap
+            if (
+                a.lecturer_id is not None
+                and b.lecturer_id is not None
+                and a.lecturer_id == b.lecturer_id
+            ):
+                violations.append({
+                    "type": "lecturer_overlap",
+                    "lecturer_id": a.lecturer_id,
+                    "session_ids": sorted([
+                        a.id,
+                        b.id,
+                    ]),
+                })
+
+    # --------------------------------------------------------------
+    # Lecturer unavailability
+    # --------------------------------------------------------------
+
+    for session in sessions:
+
+        if session.lecturer_id is None:
+            continue
+
+        session_start = datetime_to_slot(session.start)
+        session_end = (
+            session_start
+            + get_duration_slots(session)
+        )
+
+        session_day = (
+            session.start.strftime("%A").lower()
+        )
+
+        for row in unavailability_rows:
+
+            if row.lecturer_id != session.lecturer_id:
+                continue
+
+            if row.day is None:
+                continue
+
+            if not _days_match(
+                row.day,
+                session_day,
+            ):
+                continue
+
+            blocked_start = day_time_to_slot(
+                row.day,
+                f"{row.hour:02d}:00",
+            )
+
+            blocked_end = blocked_start + 1
+
+            overlaps = (
+                session_start < blocked_end
+                and blocked_start < session_end
+            )
+
+            if not overlaps:
+                continue
+
+            violations.append({
+                "type": "lecturer_unavailable",
+                "lecturer_id": session.lecturer_id,
+                "session_id": session.id,
+                "day": session_day,
+                "hour": row.hour,
+            })
+
+    # --------------------------------------------------------------
+    # Valid timetable
+    # --------------------------------------------------------------
+
+    if not violations:
+        return None
+
+    # --------------------------------------------------------------
+    # Corrupted timetable
+    # --------------------------------------------------------------
+
+    print("\n")
+    print("==========================================")
+    print("CORRUPTED TIMETABLE")
+    print("UNBREAKABLE CONSTRAINT VIOLATIONS")
+    print("==========================================")
+
+    for violation in violations:
+        print(violation)
+
+    print("==========================================")
+    print("\n")
+
+    return {
+        "status": "corrupted",
+        "reason": (
+            "The existing timetable violates one or more "
+            "unbreakable constraints."
+        ),
+        "violations": violations,
+    }
+
+
+# ==================================================================
+# 2. BASELINE VIOLATION KEYS
+# ==================================================================
+
+def violation_to_key(violation):
+    """
+    Convert a BREAKABLE violation into a stable identity.
+    """
+
+    violation_type = violation["type"]
+
+    # --------------------------------------------------------------
+    # Capacity
+    # --------------------------------------------------------------
+
+    if violation_type == "class_capacity":
+        return (
+            "class_capacity",
+            violation["session_id"],
+            violation["room_id"],
+        )
+
+    # --------------------------------------------------------------
+    # Equipment
+    # --------------------------------------------------------------
+
+    if violation_type == "class_equipment":
+        return (
+            "class_equipment",
+            violation["session_id"],
+            violation["room_id"],
+        )
+
+    # --------------------------------------------------------------
+    # Lecturer daily hours
+    # --------------------------------------------------------------
+
+    if violation_type == "lecturer_daily_hours":
+        return (
+            "lecturer_daily_hours",
+            violation["lecturer_id"],
+            violation["day"].lower(),
+        )
+
+    # --------------------------------------------------------------
+    # Cohort daily hours
+    # --------------------------------------------------------------
+
+    if violation_type == "cohort_daily_hours":
+        return (
+            "cohort_daily_hours",
+            violation["cohort_id"],
+            violation["day"].lower(),
+        )
+
+    # --------------------------------------------------------------
+    # Lunch
+    # --------------------------------------------------------------
+
+    if violation_type == "lecturer_lunch_break":
+        return (
+            "lecturer_lunch_break",
+            violation["lecturer_id"],
+            violation["day"].lower(),
+        )
+
+    raise ValueError(
+        f"Unsupported breakable violation type: {violation_type}"
+    )
+
+
+# ==================================================================
+# 3. FIND EXISTING BREAKABLE VIOLATIONS
+# ==================================================================
+
+def get_existing_breakable_violations(db):
+    """
+    Inspect the CURRENT timetable and find existing violations of
+    BREAKABLE constraints only.
+
+    Breakable:
+        - class capacity
+        - class equipment
+        - lecturer daily hours
+        - cohort daily hours
+        - lecturer lunch break
+    """
+
+    sessions = db.query(Session).all()
+
+    rooms = get_rooms(db)
+
+    rooms_by_id = {
+        room.id: room
+        for room in rooms
+    }
+
+    active_capacity_sessions = (
+        get_active_class_capacity_sessions(db)
+    )
+
+    active_equipment_sessions = (
+        get_active_class_equipment_sessions(db)
+    )
+
+    lecturer_daily_constraints = (
+        get_active_lecturer_daily_hour_constraints(db)
+    )
+
+    cohort_daily_constraints = (
+        get_active_cohort_daily_hour_constraints(db)
+    )
+
+    lecturer_lunch_constraints = (
+        get_active_lecturer_lunch_constraints(db)
+    )
+
+    violations = []
+
+    # ==============================================================
+    # CLASS CAPACITY
+    # ==============================================================
+
+    for session in sessions:
+
+        if session.id not in active_capacity_sessions:
+            continue
+
+        if session.room_id is None:
+            continue
+
+        required_capacity = (
+            session.module.required_capacity
+        )
+
+        if required_capacity is None:
+            continue
+
+        room = rooms_by_id.get(
+            session.room_id
+        )
+
+        if room is None:
+            continue
+
+        if room.capacity >= required_capacity:
+            continue
+
+        violations.append({
+            "type": "class_capacity",
+            "session_id": session.id,
+            "room_id": room.id,
+            "required_capacity": required_capacity,
+            "room_capacity": room.capacity,
+        })
+
+    # ==============================================================
+    # CLASS EQUIPMENT
+    # ==============================================================
+
+    for session in sessions:
+
+        if session.id not in active_equipment_sessions:
+            continue
+
+        if session.room_id is None:
+            continue
+
+        if not session.module.required_equipment:
+            continue
+
+        room = rooms_by_id.get(
+            session.room_id
+        )
+
+        if room is None:
+            continue
+
+        required = {
+            item.strip().lower()
+            for item
+            in session.module.required_equipment.split(",")
+            if item.strip()
+        }
+
+        available = {
+            item.strip().lower()
+            for item
+            in (room.equipment or "").split(",")
+            if item.strip()
+        }
+
+        missing = required - available
+
+        if not missing:
+            continue
+
+        violations.append({
+            "type": "class_equipment",
+            "session_id": session.id,
+            "room_id": room.id,
+            "missing_equipment": sorted(missing),
+        })
+
+    # ==============================================================
+    # LECTURER DAILY HOURS
+    # ==============================================================
+
+    for constraint in lecturer_daily_constraints:
+
+        if constraint.day is None:
+            continue
+
+        lecturer_id = constraint.lecturer_id
+        day = constraint.day.lower()
+
+        lecturer_sessions = [
+            session
+            for session in sessions
+            if (
+                session.lecturer_id == lecturer_id
+                and _days_match(
+                    session.start.strftime("%A"),
+                    day,
+                )
+            )
+        ]
+
+        total_hours = sum(
+            get_duration_slots(session)
+            for session in lecturer_sessions
+        )
+
+        if (
+            total_hours
+            <= LECTURER_MAX_HOURS_PER_DAY
+        ):
+            continue
+
+        violations.append({
+            "type": "lecturer_daily_hours",
+            "lecturer_id": lecturer_id,
+            "day": day,
+            "total_hours": total_hours,
+            "limit": LECTURER_MAX_HOURS_PER_DAY,
+            "session_ids": [
+                session.id
+                for session in lecturer_sessions
+            ],
+        })
+
+    # ==============================================================
+    # COHORT DAILY HOURS
+    # ==============================================================
+
+    for constraint in cohort_daily_constraints:
+
+        if constraint.day is None:
+            continue
+
+        cohort_id = constraint.cohort_id
+        day = constraint.day.lower()
+
+        cohort_sessions = []
+
+        for session in sessions:
+
+            if not _days_match(
+                session.start.strftime("%A"),
+                day,
+            ):
+                continue
+
+            belongs_to_cohort = any(
+                cohort.id == cohort_id
+                for cohort in session.cohorts
+            )
+
+            if belongs_to_cohort:
+                cohort_sessions.append(
+                    session
+                )
+
+        total_hours = sum(
+            get_duration_slots(session)
+            for session in cohort_sessions
+        )
+
+        if (
+            total_hours
+            <= COHORT_MAX_HOURS_PER_DAY
+        ):
+            continue
+
+        violations.append({
+            "type": "cohort_daily_hours",
+            "cohort_id": cohort_id,
+            "day": day,
+            "total_hours": total_hours,
+            "limit": COHORT_MAX_HOURS_PER_DAY,
+            "session_ids": [
+                session.id
+                for session in cohort_sessions
+            ],
+        })
+
+    # ==============================================================
+    # LECTURER LUNCH BREAK
+    # ==============================================================
+
+    for constraint in lecturer_lunch_constraints:
+
+        if constraint.day is None:
+            continue
+
+        lecturer_id = constraint.lecturer_id
+        day = constraint.day.lower()
+
+        lecturer_sessions = [
+            session
+            for session in sessions
+            if (
+                session.lecturer_id == lecturer_id
+                and _days_match(
+                    session.start.strftime("%A"),
+                    day,
+                )
+            )
+        ]
+
+        lunch_12_start = day_time_to_slot(
+            day,
+            "12:00",
+        )
+
+        lunch_12_end = (
+            lunch_12_start + 1
+        )
+
+        lunch_13_start = day_time_to_slot(
+            day,
+            "13:00",
+        )
+
+        lunch_13_end = (
+            lunch_13_start + 1
+        )
+
+        blocks_12 = []
+        blocks_13 = []
+
+        for session in lecturer_sessions:
+
+            start = datetime_to_slot(
+                session.start
+            )
+
+            end = (
+                start
+                + get_duration_slots(session)
+            )
+
+            # Blocks 12:00-13:00
+            if (
+                start < lunch_12_end
+                and lunch_12_start < end
+            ):
+                blocks_12.append(
+                    session.id
+                )
+
+            # Blocks 13:00-14:00
+            if (
+                start < lunch_13_end
+                and lunch_13_start < end
+            ):
+                blocks_13.append(
+                    session.id
+                )
+
+        # Lecturer has no free lunch slot
+        if blocks_12 and blocks_13:
+            violations.append({
+                "type": "lecturer_lunch_break",
+                "lecturer_id": lecturer_id,
+                "day": day,
+                "session_ids": sorted(
+                    set(
+                        blocks_12
+                        + blocks_13
+                    )
+                ),
+                "blocking_12_13": blocks_12,
+                "blocking_13_14": blocks_13,
+            })
+
+    return violations
+
+
+# ==================================================================
+# 4. BUILD BASELINE CONTEXT
+# ==================================================================
+
+def build_baseline_violation_context(
+    baseline_violations,
+):
+    """
+    Build lookup structures used by the baseline-aware CP-SAT
+    constraints.
+    """
+
+    violation_keys = set()
+
+    lecturer_daily_limits = {}
+    cohort_daily_limits = {}
+
+    for violation in baseline_violations:
+
+        violation_keys.add(
+            violation_to_key(violation)
+        )
+
+        # ----------------------------------------------------------
+        # Existing daily-hours violations are allowed up to their
+        # CURRENT total, but cannot get worse.
+        # ----------------------------------------------------------
+
+        if (
+            violation["type"]
+            == "lecturer_daily_hours"
+        ):
+            lecturer_daily_limits[
+                (
+                    violation["lecturer_id"],
+                    violation["day"].lower(),
+                )
+            ] = violation["total_hours"]
+
+        elif (
+            violation["type"]
+            == "cohort_daily_hours"
+        ):
+            cohort_daily_limits[
+                (
+                    violation["cohort_id"],
+                    violation["day"].lower(),
+                )
+            ] = violation["total_hours"]
+
+    return {
+        "keys": violation_keys,
+        "lecturer_daily_limits": lecturer_daily_limits,
+        "cohort_daily_limits": cohort_daily_limits,
+    }
+
+
+# ==================================================================
+# 5. BASELINE-AWARE CAPACITY
+# ==================================================================
+
+def add_baseline_aware_class_capacity_constraint(
+    model,
+    all_sessions,
+    room_vars,
+    rooms,
+    active_capacity_sessions,
+    baseline_violation_keys,
+):
+    """
+    Normally a session may only use a sufficiently large room.
+
+    Exception:
+    If session X is ALREADY in undersized room Y, that exact
+    assignment may remain.
+
+    Other undersized rooms are NOT allowed.
+    """
+
+    for session in all_sessions:
+
+        if (
+            session.id
+            not in active_capacity_sessions
+        ):
+            continue
+
+        required_capacity = (
+            session.module.required_capacity
+        )
+
+        if required_capacity is None:
+            continue
+
+        allowed_rooms = []
+
+        for index, room in enumerate(rooms):
+
+            normally_valid = (
+                room.capacity
+                >= required_capacity
+            )
+
+            baseline_key = (
+                "class_capacity",
+                session.id,
+                room.id,
+            )
+
+            grandfathered = (
+                baseline_key
+                in baseline_violation_keys
+            )
+
+            if (
+                normally_valid
+                or grandfathered
+            ):
+                allowed_rooms.append([
+                    index
+                ])
+
+        model.AddAllowedAssignments(
+            [room_vars[session.id]],
+            allowed_rooms,
+        )
+
+
+# ==================================================================
+# 6. BASELINE-AWARE EQUIPMENT
+# ==================================================================
+
+def add_baseline_aware_class_equipment_constraint(
+    model,
+    all_sessions,
+    room_vars,
+    rooms,
+    active_equipment_sessions,
+    baseline_violation_keys,
+):
+    """
+    Normally a session may only use a room containing all required
+    equipment.
+
+    If it ALREADY occupies an unsuitable room, that exact room
+    assignment may remain.
+    """
+
+    for session in all_sessions:
+
+        if (
+            session.id
+            not in active_equipment_sessions
+        ):
+            continue
+
+        if (
+            not session.module.required_equipment
+        ):
+            continue
+
+        required = {
+            item.strip().lower()
+            for item
+            in session.module.required_equipment.split(",")
+            if item.strip()
+        }
+
+        allowed_rooms = []
+
+        for index, room in enumerate(rooms):
+
+            available = {
+                item.strip().lower()
+                for item
+                in (room.equipment or "").split(",")
+                if item.strip()
+            }
+
+            normally_valid = (
+                required.issubset(
+                    available
+                )
+            )
+
+            baseline_key = (
+                "class_equipment",
+                session.id,
+                room.id,
+            )
+
+            grandfathered = (
+                baseline_key
+                in baseline_violation_keys
+            )
+
+            if (
+                normally_valid
+                or grandfathered
+            ):
+                allowed_rooms.append([
+                    index
+                ])
+
+        model.AddAllowedAssignments(
+            [room_vars[session.id]],
+            allowed_rooms,
+        )
+
+
+# ==================================================================
+# 7. BASELINE-AWARE COHORT DAILY HOURS
+# ==================================================================
+
+def add_baseline_aware_cohort_daily_hours_constraint(
+    model,
+    all_sessions,
+    start_vars,
+    cohort_constraints,
+    baseline_context,
+):
+    """
+    If the cohort is currently valid:
+        candidate hours <= normal limit
+
+    If the cohort already exceeds the limit:
+        candidate hours <= existing baseline hours
+
+    So an old violation can remain, but cannot become worse.
+    """
+
+    baseline_limits = (
+        baseline_context[
+            "cohort_daily_limits"
+        ]
+    )
+
+    for constraint in cohort_constraints:
+
+        if constraint.day is None:
+            continue
+
+        cohort_id = constraint.cohort_id
+        day = constraint.day.lower()
+
+        day_index = DAY_TO_INDEX[
+            day
+        ]
+
+        allowed_limit = (
+            baseline_limits.get(
+                (cohort_id, day),
+                COHORT_MAX_HOURS_PER_DAY,
+            )
+        )
+
+        terms = []
+
+        for session in all_sessions:
+
+            belongs_to_cohort = any(
+                cohort.id == cohort_id
+                for cohort in session.cohorts
+            )
+
+            if not belongs_to_cohort:
+                continue
+
+            duration = get_duration_slots(
+                session
+            )
+
+            session_day = model.NewIntVar(
+                0,
+                4,
+                (
+                    f"min_cohort_day_"
+                    f"{session.id}_"
+                    f"{cohort_id}_"
+                    f"{day}"
+                ),
+            )
+
+            is_on_day = model.NewBoolVar(
+                (
+                    f"min_cohort_on_day_"
+                    f"{session.id}_"
+                    f"{cohort_id}_"
+                    f"{day}"
+                )
+            )
+
+            model.AddDivisionEquality(
+                session_day,
+                start_vars[session.id],
+                SLOTS_PER_DAY,
+            )
+
+            model.Add(
+                session_day == day_index
+            ).OnlyEnforceIf(
+                is_on_day
+            )
+
+            model.Add(
+                session_day != day_index
+            ).OnlyEnforceIf(
+                is_on_day.Not()
+            )
+
+            terms.append(
+                duration * is_on_day
+            )
+
+        if terms:
+            model.Add(
+                sum(terms)
+                <= allowed_limit
+            )
+
+
+# ==================================================================
+# 8. BASELINE-AWARE LECTURER DAILY HOURS
+# ==================================================================
+
+def add_baseline_aware_lecturer_daily_hours_constraint(
+    model,
+    all_sessions,
+    start_vars,
+    lecturer_vars,
+    lecturer_id_to_index,
+    lecturer_constraints,
+    baseline_context,
+):
+    """
+    If lecturer/day is currently valid:
+        candidate <= normal max
+
+    If lecturer/day already exceeds max:
+        candidate <= baseline amount
+    """
+
+    baseline_limits = (
+        baseline_context[
+            "lecturer_daily_limits"
+        ]
+    )
+
+    for constraint in lecturer_constraints:
+
+        if constraint.day is None:
+            continue
+
+        lecturer_id = (
+            constraint.lecturer_id
+        )
+
+        if (
+            lecturer_id
+            not in lecturer_id_to_index
+        ):
+            continue
+
+        lecturer_index = (
+            lecturer_id_to_index[
+                lecturer_id
+            ]
+        )
+
+        day = constraint.day.lower()
+
+        day_index = DAY_TO_INDEX[
+            day
+        ]
+
+        allowed_limit = (
+            baseline_limits.get(
+                (lecturer_id, day),
+                LECTURER_MAX_HOURS_PER_DAY,
+            )
+        )
+
+        terms = []
+
+        for session in all_sessions:
+
+            duration = get_duration_slots(
+                session
+            )
+
+            assigned = model.NewBoolVar(
+                (
+                    f"min_daily_assigned_"
+                    f"{session.id}_"
+                    f"{lecturer_id}_"
+                    f"{day}"
+                )
+            )
+
+            session_day = model.NewIntVar(
+                0,
+                4,
+                (
+                    f"min_daily_day_"
+                    f"{session.id}_"
+                    f"{lecturer_id}_"
+                    f"{day}"
+                ),
+            )
+
+            is_on_day = model.NewBoolVar(
+                (
+                    f"min_daily_on_day_"
+                    f"{session.id}_"
+                    f"{lecturer_id}_"
+                    f"{day}"
+                )
+            )
+
+            counts = model.NewBoolVar(
+                (
+                    f"min_daily_counts_"
+                    f"{session.id}_"
+                    f"{lecturer_id}_"
+                    f"{day}"
+                )
+            )
+
+            # Assigned to lecturer?
+            model.Add(
+                lecturer_vars[session.id]
+                == lecturer_index
+            ).OnlyEnforceIf(
+                assigned
+            )
+
+            model.Add(
+                lecturer_vars[session.id]
+                != lecturer_index
+            ).OnlyEnforceIf(
+                assigned.Not()
+            )
+
+            # On this day?
+            model.AddDivisionEquality(
+                session_day,
+                start_vars[session.id],
+                SLOTS_PER_DAY,
+            )
+
+            model.Add(
+                session_day == day_index
+            ).OnlyEnforceIf(
+                is_on_day
+            )
+
+            model.Add(
+                session_day != day_index
+            ).OnlyEnforceIf(
+                is_on_day.Not()
+            )
+
+            # counts = assigned AND is_on_day
+            model.AddBoolAnd([
+                assigned,
+                is_on_day,
+            ]).OnlyEnforceIf(
+                counts
+            )
+
+            model.AddBoolOr([
+                assigned.Not(),
+                is_on_day.Not(),
+            ]).OnlyEnforceIf(
+                counts.Not()
+            )
+
+            terms.append(
+                duration * counts
+            )
+
+        if terms:
+            model.Add(
+                sum(terms)
+                <= allowed_limit
+            )
+
+
+# ==================================================================
+# 9. BASELINE-AWARE LUNCH BREAK
+# ==================================================================
+
+def add_baseline_aware_lecturer_lunch_break_constraint(
+    model,
+    all_sessions,
+    start_vars,
+    lecturer_vars,
+    lecturer_id_to_index,
+    lunch_constraints,
+    baseline_violation_keys,
+):
+    """
+    If lecturer/day already has no valid lunch break,
+    do not force CP-SAT to repair it.
+
+    Every other lecturer/day keeps the normal lunch constraint.
+    """
+
+    for constraint in lunch_constraints:
+
+        if constraint.day is None:
+            continue
+
+        lecturer_id = (
+            constraint.lecturer_id
+        )
+
+        if (
+            lecturer_id
+            not in lecturer_id_to_index
+        ):
+            continue
+
+        day = constraint.day.lower()
+
+        baseline_key = (
+            "lecturer_lunch_break",
+            lecturer_id,
+            day,
+        )
+
+        # Existing violation:
+        # grandfather this exact lecturer/day.
+        if (
+            baseline_key
+            in baseline_violation_keys
+        ):
+            continue
+
+        lecturer_index = (
+            lecturer_id_to_index[
+                lecturer_id
+            ]
+        )
+
+        lunch_start_12 = (
+            day_time_to_slot(
+                day,
+                "12:00",
+            )
+        )
+
+        lunch_start_13 = (
+            day_time_to_slot(
+                day,
+                "13:00",
+            )
+        )
+
+        lunch_start = (
+            model.NewIntVarFromDomain(
+                cp_model.Domain.FromValues([
+                    lunch_start_12,
+                    lunch_start_13,
+                ]),
+                (
+                    f"min_lunch_"
+                    f"{lecturer_id}_"
+                    f"{day}"
+                ),
+            )
+        )
+
+        lunch_end = model.NewIntVar(
+            lunch_start_12 + 1,
+            lunch_start_13 + 1,
+            (
+                f"min_lunch_end_"
+                f"{lecturer_id}_"
+                f"{day}"
+            ),
+        )
+
+        model.Add(
+            lunch_end
+            == lunch_start + 1
+        )
+
+        for session in all_sessions:
+
+            duration = get_duration_slots(
+                session
+            )
+
+            assigned = model.NewBoolVar(
+                (
+                    f"min_lunch_assigned_"
+                    f"{session.id}_"
+                    f"{lecturer_id}_"
+                    f"{day}"
+                )
+            )
+
+            before_lunch = (
+                model.NewBoolVar(
+                    (
+                        f"min_before_lunch_"
+                        f"{session.id}_"
+                        f"{lecturer_id}_"
+                        f"{day}"
+                    )
+                )
+            )
+
+            after_lunch = (
+                model.NewBoolVar(
+                    (
+                        f"min_after_lunch_"
+                        f"{session.id}_"
+                        f"{lecturer_id}_"
+                        f"{day}"
+                    )
+                )
+            )
+
+            model.Add(
+                lecturer_vars[session.id]
+                == lecturer_index
+            ).OnlyEnforceIf(
+                assigned
+            )
+
+            model.Add(
+                lecturer_vars[session.id]
+                != lecturer_index
+            ).OnlyEnforceIf(
+                assigned.Not()
+            )
+
+            model.Add(
+                (
+                    start_vars[session.id]
+                    + duration
+                )
+                <= lunch_start
+            ).OnlyEnforceIf(
+                before_lunch
+            )
+
+            model.Add(
+                start_vars[session.id]
+                >= lunch_end
+            ).OnlyEnforceIf(
+                after_lunch
+            )
+
+            model.AddBoolOr([
+                assigned.Not(),
+                before_lunch,
+                after_lunch,
+            ])
+
+
+# ==================================================================
+# 10. BUILD MINIMUM-PERTURBATION MODEL
+# ==================================================================
+
+def build_min_perturbation_solver_model(
+    target_session,
+    change_plan,
+    other_sessions,
+    rooms,
+    lecturers,
+    unavailability_rows,
+    active_capacity_sessions,
+    active_equipment_sessions,
+    cohort_daily_constraints,
+    lecturer_daily_constraints,
+    lecturer_lunch_constraints,
+    baseline_context,
+):
+    model = cp_model.CpModel()
+
+    all_sessions = [
+        *other_sessions,
+        target_session,
+    ]
+
+    (
+        room_id_to_index,
+        index_to_room_id,
+    ) = build_room_mappings(
+        rooms
+    )
+
+    (
+        lecturer_id_to_index,
+        index_to_lecturer_id,
+    ) = build_lecturer_mappings(
+        lecturers
+    )
+
+    baseline_violation_keys = (
+        baseline_context["keys"]
+    )
+
+    start_vars = {}
+    room_vars = {}
+    lecturer_vars = {}
+
+    # ==============================================================
+    # Create variables
+    # ==============================================================
+
+    for session in all_sessions:
+
+        duration = get_duration_slots(
+            session
+        )
+
+        valid_start_slots = (
+            get_valid_start_slots(
+                duration
+            )
+        )
+
+        start_vars[session.id] = (
+            model.NewIntVarFromDomain(
+                cp_model.Domain.FromValues(
+                    valid_start_slots
+                ),
+                f"min_start_{session.id}",
+            )
+        )
+
+        room_vars[session.id] = (
+            model.NewIntVar(
+                0,
+                len(rooms) - 1,
+                f"min_room_{session.id}",
+            )
+        )
+
+        lecturer_vars[session.id] = (
+            model.NewIntVar(
+                0,
+                len(lecturers) - 1,
+                f"min_lecturer_{session.id}",
+            )
+        )
+
+    # ==============================================================
+    # Other sessions:
+    #
+    # Lecturer frozen.
+    # Time / room may move.
+    #
+    # One touched session = perturbation cost 1.
+    # ==============================================================
+
+    session_changed_vars = {}
+
+    for session in other_sessions:
+
+        session_id = session.id
+
+        current_start = datetime_to_slot(
+            session.start
+        )
+
+        current_room = (
+            room_id_to_index[
+                session.room_id
+            ]
+        )
+
+        current_lecturer = (
+            lecturer_id_to_index[
+                session.lecturer_id
+            ]
+        )
+
+        # Lecturer cannot cascade.
+        model.Add(
+            lecturer_vars[session_id]
+            == current_lecturer
+        )
+
+        time_changed = (
+            model.NewBoolVar(
+                f"min_time_changed_{session_id}"
+            )
+        )
+
+        room_changed = (
+            model.NewBoolVar(
+                f"min_room_changed_{session_id}"
+            )
+        )
+
+        session_changed = (
+            model.NewBoolVar(
+                f"min_session_changed_{session_id}"
+            )
+        )
+
+        # ----------------------------------------------------------
+        # time_changed <=> time != original
+        # ----------------------------------------------------------
+
+        model.Add(
+            start_vars[session_id]
+            != current_start
+        ).OnlyEnforceIf(
+            time_changed
+        )
+
+        model.Add(
+            start_vars[session_id]
+            == current_start
+        ).OnlyEnforceIf(
+            time_changed.Not()
+        )
+
+        # ----------------------------------------------------------
+        # room_changed <=> room != original
+        # ----------------------------------------------------------
+
+        model.Add(
+            room_vars[session_id]
+            != current_room
+        ).OnlyEnforceIf(
+            room_changed
+        )
+
+        model.Add(
+            room_vars[session_id]
+            == current_room
+        ).OnlyEnforceIf(
+            room_changed.Not()
+        )
+
+        # ----------------------------------------------------------
+        # session_changed =
+        #     time_changed OR room_changed
+        # ----------------------------------------------------------
+
+        model.AddBoolOr([
+            time_changed,
+            room_changed,
+        ]).OnlyEnforceIf(
+            session_changed
+        )
+
+        model.AddBoolAnd([
+            time_changed.Not(),
+            room_changed.Not(),
+        ]).OnlyEnforceIf(
+            session_changed.Not()
+        )
+
+        session_changed_vars[
+            session_id
+        ] = session_changed
+
+    # ==============================================================
+    # Apply requested change to TARGET
+    # ==============================================================
+
+    target_id = target_session.id
+
+    # --------------------------------------------------------------
+    # TIME
+    # --------------------------------------------------------------
+
+    if (
+        change_plan["time"]["mode"]
+        == ChangeMode.KEEP
+    ):
+        model.Add(
+            start_vars[target_id]
+            == datetime_to_slot(
+                target_session.start
+            )
+        )
+
+    elif (
+        change_plan["time"]["mode"]
+        == ChangeMode.SPECIFIC
+    ):
+        requested_start = (
+            parse_requested_start(
+                change_plan["time"]["target"]
+            )
+        )
+
+        model.Add(
+            start_vars[target_id]
+            == datetime_to_slot(
+                requested_start
+            )
+        )
+
+    elif (
+        change_plan["time"]["mode"]
+        == ChangeMode.FIND
+    ):
+        model.Add(
+            start_vars[target_id]
+            != datetime_to_slot(
+                target_session.start
+            )
+        )
+
+    # --------------------------------------------------------------
+    # ROOM
+    # --------------------------------------------------------------
+
+    if (
+        change_plan["room"]["mode"]
+        == ChangeMode.KEEP
+    ):
+        model.Add(
+            room_vars[target_id]
+            == room_id_to_index[
+                target_session.room_id
+            ]
+        )
+
+    elif (
+        change_plan["room"]["mode"]
+        == ChangeMode.SPECIFIC
+    ):
+        model.Add(
+            room_vars[target_id]
+            == room_id_to_index[
+                change_plan["room"]["target"]
+            ]
+        )
+
+    elif (
+        change_plan["room"]["mode"]
+        == ChangeMode.FIND
+        and target_session.room_id is not None
+    ):
+        model.Add(
+            room_vars[target_id]
+            != room_id_to_index[
+                target_session.room_id
+            ]
+        )
+
+    # --------------------------------------------------------------
+    # LECTURER
+    # --------------------------------------------------------------
+
+    if (
+        change_plan["lecturer"]["mode"]
+        == ChangeMode.KEEP
+    ):
+        model.Add(
+            lecturer_vars[target_id]
+            == lecturer_id_to_index[
+                target_session.lecturer_id
+            ]
+        )
+
+    elif (
+        change_plan["lecturer"]["mode"]
+        == ChangeMode.SPECIFIC
+    ):
+        model.Add(
+            lecturer_vars[target_id]
+            == lecturer_id_to_index[
+                change_plan[
+                    "lecturer"
+                ]["target"]
+            ]
+        )
+
+    elif (
+        change_plan["lecturer"]["mode"]
+        == ChangeMode.FIND
+    ):
+        model.Add(
+            lecturer_vars[target_id]
+            != lecturer_id_to_index[
+                target_session.lecturer_id
+            ]
+        )
+
+    # ==============================================================
+    # UNBREAKABLE CONSTRAINTS
+    #
+    # Always enforced.
+    # ==============================================================
+
+    add_room_no_overlap_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        room_vars,
+    )
+
+    add_lecturer_no_overlap_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        lecturer_vars,
+    )
+
+    add_lecturer_unavailability_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        lecturer_vars,
+        lecturer_id_to_index,
+        unavailability_rows,
+    )
+
+    # ==============================================================
+    # BREAKABLE CONSTRAINTS
+    #
+    # Baseline-aware.
+    # ==============================================================
+
+    add_baseline_aware_class_capacity_constraint(
+        model,
+        all_sessions,
+        room_vars,
+        rooms,
+        active_capacity_sessions,
+        baseline_violation_keys,
+    )
+
+    add_baseline_aware_class_equipment_constraint(
+        model,
+        all_sessions,
+        room_vars,
+        rooms,
+        active_equipment_sessions,
+        baseline_violation_keys,
+    )
+
+    add_baseline_aware_cohort_daily_hours_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        cohort_daily_constraints,
+        baseline_context,
+    )
+
+    add_baseline_aware_lecturer_daily_hours_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        lecturer_vars,
+        lecturer_id_to_index,
+        lecturer_daily_constraints,
+        baseline_context,
+    )
+
+    add_baseline_aware_lecturer_lunch_break_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        lecturer_vars,
+        lecturer_id_to_index,
+        lecturer_lunch_constraints,
+        baseline_violation_keys,
+    )
+
+    # ==============================================================
+    # OBJECTIVE:
+    #
+    # Minimize number of OTHER sessions touched.
+    # ==============================================================
+
+    if session_changed_vars:
+        model.Minimize(
+            sum(
+                session_changed_vars.values()
+            )
+        )
+
+    return (
+        model,
+        start_vars,
+        room_vars,
+        lecturer_vars,
+        index_to_room_id,
+        index_to_lecturer_id,
+        room_id_to_index,
+        session_changed_vars,
+    )
+
+
+def solve_reschedule_min_perturbation(
+    request: RescheduleRequestIn,
+    db,
+):
+    """
+    Reschedule the target session while touching the minimum
+    possible number of other sessions.
+
+    Perturbation-only recovery:
+    - Other timetable sessions may be moved.
+    - All currently active constraints remain enforced.
+    - No temporary constraint relaxations/deactivations are applied.
+    """
+
+    # ==============================================================
+    # 1. Normal request validation
+    # ==============================================================
+
+    pre_solve = build_pre_solve_context(
+        request,
+        db,
+    )
+
+    if pre_solve["status"] != "ready":
+        return pre_solve
+
+    target_session: Session = pre_solve["target_session"]
+    change_plan = pre_solve["change_plan"]
+    other_sessions = pre_solve["other_sessions"]
+
+    # ==============================================================
+    # 2. Existing timetable MUST satisfy hard/unbreakable rules
+    # ==============================================================
+
+    # TODO: what if there has been previous disruptions we are talking into account?
+    corruption = check_timetable_integrity(db)
+
+    if corruption is not None:
+        return corruption
+
+    # ==============================================================
+    # 3. Snapshot existing breakable violations
+    # ==============================================================
+
+    baseline_violations = get_existing_breakable_violations(db)
+
+    baseline_context = build_baseline_violation_context(
+        baseline_violations
+    )
+
+    print("\n")
+    print("==========================================")
+    print("EXISTING BREAKABLE VIOLATIONS")
+    print("==========================================")
+
+    if baseline_violations:
+        for violation in baseline_violations:
+            print(violation)
+    else:
+        print("None")
+
+    print("==========================================")
+    print("\n")
+
+    # ==============================================================
+    # 4. Load ALL currently active constraints
+    # ==============================================================
+
+    rooms = get_rooms(db)
+    lecturers = get_lecturers(db)
+
+    unavailability_rows = (
+        get_all_lecturer_unavailability(db)
+    )
+
+    active_capacity_sessions = (
+        get_active_class_capacity_sessions(db)
+    )
+
+    active_equipment_sessions = (
+        get_active_class_equipment_sessions(db)
+    )
+
+    cohort_daily_constraints = (
+        get_active_cohort_daily_hour_constraints(db)
+    )
+
+    lecturer_daily_constraints = (
+        get_active_lecturer_daily_hour_constraints(db)
+    )
+
+    lecturer_lunch_constraints = (
+        get_active_lecturer_lunch_constraints(db)
+    )
+
+    # ==============================================================
+    # 5. Build perturbation-only model
+    #
+    # IMPORTANT:
+    # No call to apply_temporary_deactivations() here.
+    # Every currently active constraint remains enforced.
+    # ==============================================================
+
+    (
+        model,
+        start_vars,
+        room_vars,
+        lecturer_vars,
+        index_to_room_id,
+        index_to_lecturer_id,
+        room_id_to_index,
+        session_changed_vars,
+    ) = build_min_perturbation_solver_model(
+        target_session=target_session,
+        change_plan=change_plan,
+        other_sessions=other_sessions,
+        rooms=rooms,
+        lecturers=lecturers,
+        unavailability_rows=unavailability_rows,
+
+        active_capacity_sessions=(
+            active_capacity_sessions
+        ),
+
+        active_equipment_sessions=(
+            active_equipment_sessions
+        ),
+
+        cohort_daily_constraints=(
+            cohort_daily_constraints
+        ),
+
+        lecturer_daily_constraints=(
+            lecturer_daily_constraints
+        ),
+
+        lecturer_lunch_constraints=(
+            lecturer_lunch_constraints
+        ),
+
+        baseline_context=baseline_context,
+    )
+
+    # ==============================================================
+    # 6. Solve
+    # ==============================================================
+
+    solver = cp_model.CpSolver()
+
+    status = solver.Solve(model)
+
+    # ==============================================================
+    # 7. No perturbation-only solution
+    # ==============================================================
+
+    if status not in (
+        cp_model.OPTIMAL,
+        cp_model.FEASIBLE,
+    ):
+        print("\n")
+        print("==========================================")
+        print("MINIMUM PERTURBATION SOLVER")
+        print("NO FEASIBLE SOLUTION")
+        print("==========================================")
+        print(
+            "Target session:",
+            target_session.id,
+        )
+        print("==========================================")
+        print("\n")
+
+        return {
+            "status": "infeasible",
+            "reason": (
+                "No feasible perturbation-only solution exists "
+                "while keeping all active constraints enforced."
+            ),
+            "diagnostics": None,
+        }
+
+    # ==============================================================
+    # 8. Target result
+    # ==============================================================
+
+    target_id = target_session.id
+
+    solved_start_slot = solver.Value(
+        start_vars[target_id]
+    )
+
+    solved_time = slot_to_day_time(
+        solved_start_slot
+    )
+
+    # ==============================================================
+    # 9. Collect perturbed sessions
+    # ==============================================================
+
+    additional_changes = []
+
+    for session in other_sessions:
+        session_id = session.id
+
+        if solver.Value(
+            session_changed_vars[session_id]
+        ) == 0:
+            continue
+
+        solved_start = solver.Value(
+            start_vars[session_id]
+        )
+
+        solved_room_index = solver.Value(
+            room_vars[session_id]
+        )
+
+        original_start = datetime_to_slot(
+            session.start
+        )
+
+        original_room_index = room_id_to_index[
+            session.room_id
+        ]
+
+        solved_session_time = slot_to_day_time(
+            solved_start
+        )
+
+        additional_changes.append({
+            "session_id": session_id,
+
+            "time_changed": (
+                solved_start != original_start
+            ),
+
+            "old_start_slot": original_start,
+            "new_start_slot": solved_start,
+
+            "old_day": (
+                session.start
+                .strftime("%A")
+                .lower()
+            ),
+
+            "old_time": (
+                session.start
+                .strftime("%H:%M")
+            ),
+
+            "new_day": solved_session_time["day"],
+            "new_time": solved_session_time["time"],
+
+            "room_changed": (
+                solved_room_index
+                != original_room_index
+            ),
+
+            "old_room_id": session.room_id,
+
+            "new_room_id": (
+                index_to_room_id[
+                    solved_room_index
+                ]
+            ),
+        })
+
+
+    return {
+        "status": "feasible",
+        "reason": None,
+
+        "session_id": target_id,
+
+        "start_slot": solved_start_slot,
+        "day": solved_time["day"],
+        "time": solved_time["time"],
+
+        "room_id": index_to_room_id[
+            solver.Value(
+                room_vars[target_id]
+            )
+        ],
+
+        "lecturer_id": index_to_lecturer_id[
+            solver.Value(
+                lecturer_vars[target_id]
+            )
+        ],
+
+        "additional_changes": additional_changes,
+
+        "perturbation_count": len(
+            additional_changes
+        ),
+    }
+# endregion
+
