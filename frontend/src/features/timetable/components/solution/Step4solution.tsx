@@ -123,6 +123,7 @@ type RescheduleResponse =
       room_id?: string;
       lecturer_id?: string;
       additional_changes?: AdditionalChange[];
+      objective_score?: number | null;
     }
   | {
       status: "infeasible" | "invalid" | "success";
@@ -1055,6 +1056,22 @@ function getAdditionalChangeSessionLabel(
                           : "—"}
                       </span>
                     </div>
+
+                    {originalModes?.room === "find" &&
+                      solverResult.objective_score != null && (
+                        <div
+                          style={{
+                            marginTop: "6px",
+                            fontSize: "13px",
+                            color: "#64748b",
+                          }}
+                        >
+                          Room capacity waste:{" "}
+                          <strong>
+                            {solverResult.objective_score} seats
+                          </strong>
+                        </div>
+                      )}
                   </div>
                 )}
 

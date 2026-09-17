@@ -883,6 +883,35 @@ def build_solver_model(
 
     # endregion
 
+    # region Objective: minimize room capacity waste
+    # Only applies when the user asks the solver to FIND a new room.
+    # Existing FIND behaviour is unchanged: the current room is still excluded above.
+    # The class-capacity constraint must be active so the chosen room is large enough.
+    if (
+        change_plan["room"]["mode"] == ChangeMode.FIND
+        and target_id in active_capacity_sessions
+        and target_session.module.required_capacity is not None
+    ):
+        room_capacities = [room.capacity for room in rooms]
+
+        selected_room_capacity = model.NewIntVar(
+            min(room_capacities),
+            max(room_capacities),
+            f"selected_room_capacity_{target_id}",
+        )
+
+        model.AddElement(
+            room_vars[target_id],
+            room_capacities,
+            selected_room_capacity,
+        )
+
+        # required_capacity is constant, so minimizing selected room capacity
+        # is equivalent to minimizing capacity waste.
+        model.Minimize(selected_room_capacity)
+
+    # endregion
+
     return (
         model,
         start_vars,
@@ -1132,6 +1161,23 @@ def solve_reschedule(request: RescheduleRequestIn, db):
             ),
         })
 
+    solved_target_room_index = solver.Value(
+        room_vars[target_id]
+    )
+    solved_target_room = rooms[solved_target_room_index]
+
+    room_capacity_waste_score = None
+
+    if (
+        change_plan["room"]["mode"] == ChangeMode.FIND
+        and target_id in active_capacity_sessions
+        and target_session.module.required_capacity is not None
+    ):
+        room_capacity_waste_score = (
+            solved_target_room.capacity
+            - target_session.module.required_capacity
+        )
+
     return {
         "status": "feasible",
         "reason": None,
@@ -1139,17 +1185,14 @@ def solve_reschedule(request: RescheduleRequestIn, db):
         "start_slot": solved_start_slot,
         "day": solved_time["day"],
         "time": solved_time["time"],
-        "room_id": index_to_room_id[
-            solver.Value(
-                room_vars[target_id]
-            )
-        ],
+        "room_id": index_to_room_id[solved_target_room_index],
         "lecturer_id": index_to_lecturer_id[
             solver.Value(
                 lecturer_vars[target_id]
             )
         ],
         "additional_changes": additional_changes,
+        "objective_score": room_capacity_waste_score,
     }
 # endregion
 
@@ -4201,4 +4244,3 @@ def solve_reschedule_min_perturbation(
         ),
     }
 # endregion
-
