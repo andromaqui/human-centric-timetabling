@@ -656,6 +656,8 @@ def add_lecturer_daily_hours_constraint(model, all_sessions, start_vars, lecture
 
 
 def add_lecturer_lunch_break_constraint(model, all_sessions, start_vars, lecturer_vars, lecturer_id_to_index, lunch_constraints):
+    lunch_vars = {}
+
     for constraint in lunch_constraints:
         if constraint.day is None:
             continue
@@ -700,11 +702,14 @@ def add_lecturer_lunch_break_constraint(model, all_sessions, start_vars, lecture
                 after_lunch,
             ])
 
+        lunch_vars[(constraint.lecturer_id, DAY_TO_INDEX[constraint.day.lower()])] = lunch_start
+
+    return lunch_vars
+
 # endregion
 
 
 # region Build model
-
 def build_solver_model(
     target_session,
     change_plan,
@@ -718,6 +723,7 @@ def build_solver_model(
     lecturer_daily_constraints,
     lecturer_lunch_constraints,
     max_additional_changes,
+    objective_weights,
 ):
     model = cp_model.CpModel()
     all_sessions = [*other_sessions, target_session]
@@ -729,7 +735,9 @@ def build_solver_model(
     room_vars = {}
     lecturer_vars = {}
 
-    # region Create variables
+    # ==============================================================
+    # Create variables
+    # ==============================================================
 
     for session in all_sessions:
         duration_slots = get_duration_slots(session)
@@ -752,9 +760,10 @@ def build_solver_model(
             f"lecturer_{session.id}",
         )
 
-    # endregion
+    # ==============================================================
+    # Freeze existing timetable / cascading changes
+    # ==============================================================
 
-    # region Freeze existing timetable
     additional_change_vars = []
 
     for session in other_sessions:
@@ -765,71 +774,163 @@ def build_solver_model(
         current_lecturer = lecturer_id_to_index[session.lecturer_id]
 
         # Lecturer can NEVER change as part of cascading.
-        model.Add(lecturer_vars[session_id] == current_lecturer)
+        model.Add(
+            lecturer_vars[session_id] == current_lecturer
+        )
 
         if max_additional_changes is None:
-            # Existing behaviour.
-            model.Add(start_vars[session_id] == current_start)
-            model.Add(room_vars[session_id] == current_room)
+            model.Add(
+                start_vars[session_id] == current_start
+            )
+            model.Add(
+                room_vars[session_id] == current_room
+            )
             continue
 
-        time_changed = model.NewBoolVar(f"time_changed_{session_id}")
-        room_changed = model.NewBoolVar(f"room_changed_{session_id}")
+        time_changed = model.NewBoolVar(
+            f"time_changed_{session_id}"
+        )
+
+        room_changed = model.NewBoolVar(
+            f"room_changed_{session_id}"
+        )
 
         # time_changed <=> start != original start
-        model.Add(start_vars[session_id] != current_start).OnlyEnforceIf(time_changed)
-        model.Add(start_vars[session_id] == current_start).OnlyEnforceIf(time_changed.Not())
+        model.Add(
+            start_vars[session_id] != current_start
+        ).OnlyEnforceIf(time_changed)
+
+        model.Add(
+            start_vars[session_id] == current_start
+        ).OnlyEnforceIf(time_changed.Not())
 
         # room_changed <=> room != original room
-        model.Add(room_vars[session_id] != current_room).OnlyEnforceIf(room_changed)
-        model.Add(room_vars[session_id] == current_room).OnlyEnforceIf(room_changed.Not())
-        additional_change_vars.extend([time_changed, room_changed,])
+        model.Add(
+            room_vars[session_id] != current_room
+        ).OnlyEnforceIf(room_changed)
+
+        model.Add(
+            room_vars[session_id] == current_room
+        ).OnlyEnforceIf(room_changed.Not())
+
+        additional_change_vars.extend([
+            time_changed,
+            room_changed,
+        ])
 
     if max_additional_changes is not None:
-        model.Add(sum(additional_change_vars) <= max_additional_changes)
-    # endregion
+        model.Add(
+            sum(additional_change_vars)
+            <= max_additional_changes
+        )
 
-    # region Apply target request
+    # ==============================================================
+    # Apply target request
+    # ==============================================================
 
     target_id = target_session.id
 
+    # ------------------------------
+    # Time
+    # ------------------------------
+
     if change_plan["time"]["mode"] == ChangeMode.KEEP:
-        model.Add(start_vars[target_id] == datetime_to_slot(target_session.start))
+        model.Add(
+            start_vars[target_id]
+            == datetime_to_slot(target_session.start)
+        )
 
     elif change_plan["time"]["mode"] == ChangeMode.SPECIFIC:
-        requested_start = parse_requested_start(change_plan["time"]["target"])
-        model.Add(start_vars[target_id] == datetime_to_slot(requested_start))
+        requested_start = parse_requested_start(
+            change_plan["time"]["target"]
+        )
+
+        model.Add(
+            start_vars[target_id]
+            == datetime_to_slot(requested_start)
+        )
 
     elif change_plan["time"]["mode"] == ChangeMode.FIND:
-        # "Find" means actually move it — otherwise the solver is free to
-        # trivially return the exact slot the class is already in.
-        model.Add(start_vars[target_id] != datetime_to_slot(target_session.start))
+        # FIND means find a DIFFERENT time.
+        model.Add(
+            start_vars[target_id]
+            != datetime_to_slot(target_session.start)
+        )
+
+    # ------------------------------
+    # Room
+    # ------------------------------
 
     if change_plan["room"]["mode"] == ChangeMode.KEEP:
-        model.Add(room_vars[target_id] == room_id_to_index[target_session.room_id])
+        model.Add(
+            room_vars[target_id]
+            == room_id_to_index[target_session.room_id]
+        )
 
     elif change_plan["room"]["mode"] == ChangeMode.SPECIFIC:
-        model.Add(room_vars[target_id] == room_id_to_index[change_plan["room"]["target"]])
+        model.Add(
+            room_vars[target_id]
+            == room_id_to_index[
+                change_plan["room"]["target"]
+            ]
+        )
 
-    elif change_plan["room"]["mode"] == ChangeMode.FIND and target_session.room_id is not None:
-        model.Add(room_vars[target_id] != room_id_to_index[target_session.room_id])
+    elif (
+        change_plan["room"]["mode"] == ChangeMode.FIND
+        and target_session.room_id is not None
+    ):
+        # FIND means find a DIFFERENT room.
+        model.Add(
+            room_vars[target_id]
+            != room_id_to_index[target_session.room_id]
+        )
+
+    # ------------------------------
+    # Lecturer
+    # ------------------------------
 
     if change_plan["lecturer"]["mode"] == ChangeMode.KEEP:
-        model.Add(lecturer_vars[target_id] == lecturer_id_to_index[target_session.lecturer_id])
+        model.Add(
+            lecturer_vars[target_id]
+            == lecturer_id_to_index[
+                target_session.lecturer_id
+            ]
+        )
 
     elif change_plan["lecturer"]["mode"] == ChangeMode.SPECIFIC:
-        model.Add(lecturer_vars[target_id] == lecturer_id_to_index[change_plan["lecturer"]["target"]])
+        model.Add(
+            lecturer_vars[target_id]
+            == lecturer_id_to_index[
+                change_plan["lecturer"]["target"]
+            ]
+        )
 
     elif change_plan["lecturer"]["mode"] == ChangeMode.FIND:
-        model.Add(lecturer_vars[target_id] != lecturer_id_to_index[target_session.lecturer_id])
+        # FIND means find a DIFFERENT lecturer.
+        model.Add(
+            lecturer_vars[target_id]
+            != lecturer_id_to_index[
+                target_session.lecturer_id
+            ]
+        )
 
-    # endregion
+    # ==============================================================
+    # Hard / relaxable constraints
+    # ==============================================================
 
-    # region Constraints
+    add_room_no_overlap_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        room_vars,
+    )
 
-    add_room_no_overlap_constraint(model, all_sessions, start_vars, room_vars)
-
-    add_lecturer_no_overlap_constraint(model, all_sessions, start_vars, lecturer_vars)
+    add_lecturer_no_overlap_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        lecturer_vars,
+    )
 
     add_lecturer_unavailability_constraint(
         model,
@@ -872,7 +973,7 @@ def build_solver_model(
         lecturer_daily_constraints,
     )
 
-    add_lecturer_lunch_break_constraint(
+    lunch_vars = add_lecturer_lunch_break_constraint(
         model,
         all_sessions,
         start_vars,
@@ -881,36 +982,608 @@ def build_solver_model(
         lecturer_lunch_constraints,
     )
 
-    # endregion
+    # ==============================================================
+    # ONE weighted objective
+    #
+    # objective_score =
+    #     user room_waste weight * room capacity waste
+    #   + user cohort_gaps weight * cohort timetable gaps
+    #   + user lecturer_idle weight * lecturer idle time
+    #   + user cohort_room_changes weight * cohort back-to-back room changes
+    # ==============================================================
 
-    # region Objective: minimize room capacity waste
-    # Only applies when the user asks the solver to FIND a new room.
-    # Existing FIND behaviour is unchanged: the current room is still excluded above.
-    # The class-capacity constraint must be active so the chosen room is large enough.
-    if (
+    # User-selected soft-objective weights (0-100).
+    # Disabled frontend objectives are sent as weight 0.
+    ROOM_WASTE_WEIGHT = objective_weights.room_waste
+    COHORT_GAP_WEIGHT = objective_weights.cohort_gaps
+    LECTURER_IDLE_WEIGHT = objective_weights.lecturer_idle
+    COHORT_ROOM_CHANGE_WEIGHT = objective_weights.cohort_room_changes
+
+    objective_terms = []
+
+    # Keep references to the individual objective variables so their
+    # solved values can be printed in solve_reschedule().
+    objective_debug_vars = {
+        "room_waste": None,
+        "cohort_gap_penalty": None,
+        "lecturer_idle_penalty": None,
+        "cohort_room_change_penalty": None,
+    }
+
+    # ==============================================================
+    # Objective term 1: room capacity waste
+    # ==============================================================
+
+    room_waste_active = (
         change_plan["room"]["mode"] == ChangeMode.FIND
         and target_id in active_capacity_sessions
         and target_session.module.required_capacity is not None
-    ):
-        room_capacities = [room.capacity for room in rooms]
+    )
 
-        selected_room_capacity = model.NewIntVar(
-            min(room_capacities),
-            max(room_capacities),
-            f"selected_room_capacity_{target_id}",
+    if room_waste_active:
+        required_capacity = (
+            target_session.module.required_capacity
+        )
+
+        room_wastes = [
+            room.capacity - required_capacity
+            for room in rooms
+        ]
+
+        room_waste_var = model.NewIntVar(
+            min(room_wastes),
+            max(room_wastes),
+            f"room_capacity_waste_{target_id}",
         )
 
         model.AddElement(
             room_vars[target_id],
-            room_capacities,
-            selected_room_capacity,
+            room_wastes,
+            room_waste_var,
         )
 
-        # required_capacity is constant, so minimizing selected room capacity
-        # is equivalent to minimizing capacity waste.
-        model.Minimize(selected_room_capacity)
+        objective_debug_vars["room_waste"] = room_waste_var
 
-    # endregion
+        objective_terms.append(
+            ROOM_WASTE_WEIGHT * room_waste_var
+        )
+
+    # ==============================================================
+    # Objective term 2: cohort timetable gaps
+    #
+    # A gap is an empty one-hour slot that has:
+    #   - at least one class before it that day
+    #   - at least one class after it that day
+    #
+    # We calculate this for every cohort attached to the target
+    # session.
+    #
+    # Because this is built from start_vars, it also remains correct
+    # when cascading recovery allows other sessions to move.
+    # ==============================================================
+
+    cohort_gap_active = (
+        change_plan["time"]["mode"] == ChangeMode.FIND
+        or change_plan["room"]["mode"] == ChangeMode.FIND
+    )
+
+    if cohort_gap_active:
+
+        target_cohort_ids = {
+            cohort.id
+            for cohort in target_session.cohorts
+        }
+
+        cohort_gap_vars = []
+
+        # Valid teaching slots within a day.
+        #
+        # Your current model uses:
+        #   first_slot = day * SLOTS_PER_DAY + 1
+        #
+        # so we use the same representation here rather than
+        # changing the timetable indexing behaviour.
+        for cohort_id in target_cohort_ids:
+
+            cohort_sessions = [
+                session
+                for session in all_sessions
+                if any(
+                    cohort.id == cohort_id
+                    for cohort in session.cohorts
+                )
+            ]
+
+            if not cohort_sessions:
+                continue
+
+            for day_index in range(5):
+
+                day_first_slot = (
+                    day_index * SLOTS_PER_DAY + 1
+                )
+
+                day_last_slot = (
+                    day_first_slot
+                    + SLOTS_PER_DAY
+                    - 1
+                )
+
+                occupied_vars = {}
+
+                # --------------------------------------------------
+                # Determine whether each hour is occupied
+                # --------------------------------------------------
+
+                for slot in range(
+                    day_first_slot,
+                    day_last_slot + 1,
+                ):
+                    covering_vars = []
+
+                    for session in cohort_sessions:
+                        duration = get_duration_slots(session)
+
+                        valid_starts = get_valid_start_slots(
+                            duration
+                        )
+
+                        starts_covering_slot = [
+                            start
+                            for start in valid_starts
+                            if (
+                                start <= slot
+                                and slot < start + duration
+                                and (
+                                    start // SLOTS_PER_DAY
+                                    == day_index
+                                )
+                            )
+                        ]
+
+                        if not starts_covering_slot:
+                            continue
+
+                        covers_slot = model.NewBoolVar(
+                            f"covers_"
+                            f"{cohort_id}_"
+                            f"{session.id}_"
+                            f"{slot}"
+                        )
+
+                        # covers_slot is true exactly when the
+                        # session starts at one of the positions
+                        # that would make it occupy this slot.
+                        allowed_rows = [
+                            [start, 1]
+                            if start in starts_covering_slot
+                            else [start, 0]
+                            for start in valid_starts
+                        ]
+
+                        model.AddAllowedAssignments(
+                            [
+                                start_vars[session.id],
+                                covers_slot,
+                            ],
+                            allowed_rows,
+                        )
+
+                        covering_vars.append(covers_slot)
+
+                    occupied = model.NewBoolVar(
+                        f"occupied_{cohort_id}_{slot}"
+                    )
+
+                    if covering_vars:
+                        # occupied = OR(covering_vars)
+                        model.AddBoolOr(
+                            covering_vars
+                        ).OnlyEnforceIf(occupied)
+
+                        model.AddBoolAnd([
+                            var.Not()
+                            for var in covering_vars
+                        ]).OnlyEnforceIf(
+                            occupied.Not()
+                        )
+                    else:
+                        model.Add(occupied == 0)
+
+                    occupied_vars[slot] = occupied
+
+                # --------------------------------------------------
+                # Determine which empty slots are genuine gaps
+                # --------------------------------------------------
+
+                slots = list(occupied_vars.keys())
+
+                for slot_index, slot in enumerate(slots):
+
+                    # First and last possible slots cannot be
+                    # internal gaps unless there are classes on
+                    # both sides, which is impossible at the edge.
+                    if slot_index == 0:
+                        continue
+
+                    if slot_index == len(slots) - 1:
+                        continue
+
+                    before_slots = slots[:slot_index]
+                    after_slots = slots[slot_index + 1:]
+
+                    has_class_before = model.NewBoolVar(
+                        f"has_before_{cohort_id}_{slot}"
+                    )
+
+                    has_class_after = model.NewBoolVar(
+                        f"has_after_{cohort_id}_{slot}"
+                    )
+
+                    # has_class_before =
+                    # OR(all occupied slots before this slot)
+                    before_vars = [
+                        occupied_vars[s]
+                        for s in before_slots
+                    ]
+
+                    model.AddBoolOr(
+                        before_vars
+                    ).OnlyEnforceIf(
+                        has_class_before
+                    )
+
+                    model.AddBoolAnd([
+                        var.Not()
+                        for var in before_vars
+                    ]).OnlyEnforceIf(
+                        has_class_before.Not()
+                    )
+
+                    # has_class_after =
+                    # OR(all occupied slots after this slot)
+                    after_vars = [
+                        occupied_vars[s]
+                        for s in after_slots
+                    ]
+
+                    model.AddBoolOr(
+                        after_vars
+                    ).OnlyEnforceIf(
+                        has_class_after
+                    )
+
+                    model.AddBoolAnd([
+                        var.Not()
+                        for var in after_vars
+                    ]).OnlyEnforceIf(
+                        has_class_after.Not()
+                    )
+
+                    gap = model.NewBoolVar(
+                        f"gap_{cohort_id}_{slot}"
+                    )
+
+                    # gap =
+                    #   NOT occupied
+                    #   AND class before
+                    #   AND class after
+                    model.AddBoolAnd([
+                        occupied_vars[slot].Not(),
+                        has_class_before,
+                        has_class_after,
+                    ]).OnlyEnforceIf(gap)
+
+                    # Reverse implication:
+                    #
+                    # if gap is false, at least one of:
+                    #   occupied
+                    #   no class before
+                    #   no class after
+                    #
+                    # must hold.
+                    model.AddBoolOr([
+                        occupied_vars[slot],
+                        has_class_before.Not(),
+                        has_class_after.Not(),
+                    ]).OnlyEnforceIf(
+                        gap.Not()
+                    )
+
+                    cohort_gap_vars.append(gap)
+
+        if cohort_gap_vars:
+            cohort_gap_penalty = model.NewIntVar(
+                0,
+                len(cohort_gap_vars),
+                f"cohort_gap_penalty_{target_id}",
+            )
+
+            model.Add(
+                cohort_gap_penalty
+                == sum(cohort_gap_vars)
+            )
+
+            objective_debug_vars["cohort_gap_penalty"] = cohort_gap_penalty
+
+            objective_terms.append(
+                COHORT_GAP_WEIGHT
+                * cohort_gap_penalty
+            )
+
+    # ==============================================================
+    # Objective term 3: lecturer idle time
+    #
+    # Empty slots between a lecturer's classes are penalized.
+    # If an active lunch-break constraint selected that slot as lunch,
+    # the slot is excluded from the idle-time penalty.
+    # ==============================================================
+
+    lecturer_idle_active = (
+        change_plan["time"]["mode"] == ChangeMode.FIND
+        or change_plan["lecturer"]["mode"] == ChangeMode.FIND
+    )
+
+    if lecturer_idle_active:
+        lecturer_idle_vars = []
+
+        for lecturer_id, lecturer_index in lecturer_id_to_index.items():
+            for day_index in range(5):
+                day_first_slot = day_index * SLOTS_PER_DAY + 1
+                day_last_slot = day_first_slot + SLOTS_PER_DAY - 1
+                occupied_vars = {}
+
+                for slot in range(day_first_slot, day_last_slot + 1):
+                    covering_vars = []
+
+                    for session in all_sessions:
+                        duration = get_duration_slots(session)
+                        valid_starts = get_valid_start_slots(duration)
+                        starts_covering_slot = [
+                            start for start in valid_starts
+                            if start <= slot < start + duration
+                            and start // SLOTS_PER_DAY == day_index
+                        ]
+                        if not starts_covering_slot:
+                            continue
+
+                        assigned = model.NewBoolVar(
+                            f"idle_assigned_{lecturer_id}_{session.id}_{slot}"
+                        )
+                        model.Add(
+                            lecturer_vars[session.id] == lecturer_index
+                        ).OnlyEnforceIf(assigned)
+                        model.Add(
+                            lecturer_vars[session.id] != lecturer_index
+                        ).OnlyEnforceIf(assigned.Not())
+
+                        starts_here = model.NewBoolVar(
+                            f"idle_covers_time_{lecturer_id}_{session.id}_{slot}"
+                        )
+                        model.AddAllowedAssignments(
+                            [start_vars[session.id], starts_here],
+                            [
+                                [start, 1 if start in starts_covering_slot else 0]
+                                for start in valid_starts
+                            ],
+                        )
+
+                        covers = model.NewBoolVar(
+                            f"idle_covers_{lecturer_id}_{session.id}_{slot}"
+                        )
+                        model.AddBoolAnd([assigned, starts_here]).OnlyEnforceIf(covers)
+                        model.AddBoolOr(
+                            [assigned.Not(), starts_here.Not()]
+                        ).OnlyEnforceIf(covers.Not())
+                        covering_vars.append(covers)
+
+                    occupied = model.NewBoolVar(
+                        f"lecturer_occupied_{lecturer_id}_{slot}"
+                    )
+                    if covering_vars:
+                        model.AddBoolOr(covering_vars).OnlyEnforceIf(occupied)
+                        model.AddBoolAnd(
+                            [v.Not() for v in covering_vars]
+                        ).OnlyEnforceIf(occupied.Not())
+                    else:
+                        model.Add(occupied == 0)
+
+                    occupied_vars[slot] = occupied
+
+                slots = list(occupied_vars.keys())
+                for slot_index, slot in enumerate(slots):
+                    if slot_index == 0 or slot_index == len(slots) - 1:
+                        continue
+
+                    before_vars = [occupied_vars[s] for s in slots[:slot_index]]
+                    after_vars = [occupied_vars[s] for s in slots[slot_index + 1:]]
+
+                    has_before = model.NewBoolVar(
+                        f"lecturer_has_before_{lecturer_id}_{slot}"
+                    )
+                    has_after = model.NewBoolVar(
+                        f"lecturer_has_after_{lecturer_id}_{slot}"
+                    )
+
+                    model.AddBoolOr(before_vars).OnlyEnforceIf(has_before)
+                    model.AddBoolAnd(
+                        [v.Not() for v in before_vars]
+                    ).OnlyEnforceIf(has_before.Not())
+
+                    model.AddBoolOr(after_vars).OnlyEnforceIf(has_after)
+                    model.AddBoolAnd(
+                        [v.Not() for v in after_vars]
+                    ).OnlyEnforceIf(has_after.Not())
+
+                    is_lunch = model.NewBoolVar(
+                        f"is_lunch_{lecturer_id}_{slot}"
+                    )
+                    lunch_var = lunch_vars.get((lecturer_id, day_index))
+
+                    if lunch_var is None:
+                        model.Add(is_lunch == 0)
+                    else:
+                        model.Add(lunch_var == slot).OnlyEnforceIf(is_lunch)
+                        model.Add(lunch_var != slot).OnlyEnforceIf(is_lunch.Not())
+
+                    idle = model.NewBoolVar(
+                        f"lecturer_idle_{lecturer_id}_{slot}"
+                    )
+
+                    model.AddBoolAnd([
+                        occupied_vars[slot].Not(),
+                        has_before,
+                        has_after,
+                        is_lunch.Not(),
+                    ]).OnlyEnforceIf(idle)
+
+                    model.AddBoolOr([
+                        occupied_vars[slot],
+                        has_before.Not(),
+                        has_after.Not(),
+                        is_lunch,
+                    ]).OnlyEnforceIf(idle.Not())
+
+                    lecturer_idle_vars.append(idle)
+
+        if lecturer_idle_vars:
+            lecturer_idle_penalty = model.NewIntVar(
+                0,
+                len(lecturer_idle_vars),
+                f"lecturer_idle_penalty_{target_id}",
+            )
+            model.Add(
+                lecturer_idle_penalty == sum(lecturer_idle_vars)
+            )
+            objective_debug_vars["lecturer_idle_penalty"] = lecturer_idle_penalty
+            objective_terms.append(
+                LECTURER_IDLE_WEIGHT * lecturer_idle_penalty
+            )
+
+    # ==============================================================
+    # Objective term 4: cohort back-to-back room changes
+    #
+    # If two sessions for the same target cohort are immediately
+    # consecutive, using different rooms incurs one penalty. Sessions
+    # separated by a timetable gap do not incur this penalty.
+    # ==============================================================
+
+    cohort_room_change_active = (
+        change_plan["time"]["mode"] == ChangeMode.FIND
+        or change_plan["room"]["mode"] == ChangeMode.FIND
+    )
+
+    if cohort_room_change_active:
+        target_cohort_ids = {
+            cohort.id
+            for cohort in target_session.cohorts
+        }
+
+        cohort_room_change_vars = []
+
+        for cohort_id in target_cohort_ids:
+            cohort_sessions = [
+                session
+                for session in all_sessions
+                if any(
+                    cohort.id == cohort_id
+                    for cohort in session.cohorts
+                )
+            ]
+
+            for i in range(len(cohort_sessions)):
+                for j in range(i + 1, len(cohort_sessions)):
+                    a = cohort_sessions[i]
+                    b = cohort_sessions[j]
+                    a_duration = get_duration_slots(a)
+                    b_duration = get_duration_slots(b)
+
+                    a_then_b = model.NewBoolVar(
+                        f"cohort_adj_{cohort_id}_{a.id}_{b.id}"
+                    )
+                    b_then_a = model.NewBoolVar(
+                        f"cohort_adj_{cohort_id}_{b.id}_{a.id}"
+                    )
+
+                    model.Add(
+                        start_vars[b.id] == start_vars[a.id] + a_duration
+                    ).OnlyEnforceIf(a_then_b)
+                    model.Add(
+                        start_vars[b.id] != start_vars[a.id] + a_duration
+                    ).OnlyEnforceIf(a_then_b.Not())
+
+                    model.Add(
+                        start_vars[a.id] == start_vars[b.id] + b_duration
+                    ).OnlyEnforceIf(b_then_a)
+                    model.Add(
+                        start_vars[a.id] != start_vars[b.id] + b_duration
+                    ).OnlyEnforceIf(b_then_a.Not())
+
+                    back_to_back = model.NewBoolVar(
+                        f"cohort_back_to_back_{cohort_id}_{a.id}_{b.id}"
+                    )
+                    model.AddBoolOr([a_then_b, b_then_a]).OnlyEnforceIf(
+                        back_to_back
+                    )
+                    model.AddBoolAnd([
+                        a_then_b.Not(),
+                        b_then_a.Not(),
+                    ]).OnlyEnforceIf(back_to_back.Not())
+
+                    different_room = model.NewBoolVar(
+                        f"cohort_different_room_{cohort_id}_{a.id}_{b.id}"
+                    )
+                    model.Add(
+                        room_vars[a.id] != room_vars[b.id]
+                    ).OnlyEnforceIf(different_room)
+                    model.Add(
+                        room_vars[a.id] == room_vars[b.id]
+                    ).OnlyEnforceIf(different_room.Not())
+
+                    room_change = model.NewBoolVar(
+                        f"cohort_room_change_{cohort_id}_{a.id}_{b.id}"
+                    )
+                    model.AddBoolAnd([
+                        back_to_back,
+                        different_room,
+                    ]).OnlyEnforceIf(room_change)
+                    model.AddBoolOr([
+                        back_to_back.Not(),
+                        different_room.Not(),
+                    ]).OnlyEnforceIf(room_change.Not())
+
+                    cohort_room_change_vars.append(room_change)
+
+        if cohort_room_change_vars:
+            cohort_room_change_penalty = model.NewIntVar(
+                0,
+                len(cohort_room_change_vars),
+                f"cohort_room_change_penalty_{target_id}",
+            )
+            model.Add(
+                cohort_room_change_penalty
+                == sum(cohort_room_change_vars)
+            )
+            objective_debug_vars[
+                "cohort_room_change_penalty"
+            ] = cohort_room_change_penalty
+            objective_terms.append(
+                COHORT_ROOM_CHANGE_WEIGHT
+                * cohort_room_change_penalty
+            )
+
+    # ==============================================================
+    # ONE objective
+    # ==============================================================
+
+    if objective_terms:
+        model.Minimize(
+            sum(objective_terms)
+        )
+
+    # ==============================================================
+    # Return model
+    # ==============================================================
 
     return (
         model,
@@ -920,12 +1593,23 @@ def build_solver_model(
         index_to_room_id,
         index_to_lecturer_id,
         room_id_to_index,
+        objective_debug_vars,
     )
 # endregion
 
 
 # region Solver
 def solve_reschedule(request: RescheduleRequestIn, db):
+    print("\n===== OBJECTIVE WEIGHTS RECEIVED =====")
+    print("Room waste:", request.objective_weights.room_waste)
+    print("Cohort gaps:", request.objective_weights.cohort_gaps)
+    print("Lecturer idle:", request.objective_weights.lecturer_idle)
+    print(
+        "Cohort room changes:",
+        request.objective_weights.cohort_room_changes,
+    )
+    print("======================================\n")
+
     pre_solve = build_pre_solve_context(request, db)
 
     if pre_solve["status"] != "ready":
@@ -968,6 +1652,7 @@ def solve_reschedule(request: RescheduleRequestIn, db):
         index_to_room_id,
         index_to_lecturer_id,
         room_id_to_index,
+        objective_debug_vars,
     ) = build_solver_model(
         target_session,
         change_plan,
@@ -981,6 +1666,7 @@ def solve_reschedule(request: RescheduleRequestIn, db):
         lecturer_daily_constraints,
         lecturer_lunch_constraints,
         request.max_additional_changes,
+        request.objective_weights,
     )
 
     solver = cp_model.CpSolver()
@@ -1166,17 +1852,99 @@ def solve_reschedule(request: RescheduleRequestIn, db):
     )
     solved_target_room = rooms[solved_target_room_index]
 
-    room_capacity_waste_score = None
+    # Actual weighted objective value minimized by CP-SAT.
+    objective_active = (
+        objective_debug_vars["room_waste"] is not None
+        or objective_debug_vars["cohort_gap_penalty"] is not None
+        or objective_debug_vars["lecturer_idle_penalty"] is not None
+        or objective_debug_vars["cohort_room_change_penalty"] is not None
+    )
+    objective_score = (
+        solver.ObjectiveValue()
+        if objective_active
+        else None
+    )
 
-    if (
-        change_plan["room"]["mode"] == ChangeMode.FIND
-        and target_id in active_capacity_sessions
-        and target_session.module.required_capacity is not None
-    ):
-        room_capacity_waste_score = (
-            solved_target_room.capacity
-            - target_session.module.required_capacity
-        )
+    # ==============================================================
+    # Objective console debug
+    # ==============================================================
+    ROOM_WASTE_WEIGHT = request.objective_weights.room_waste
+    COHORT_GAP_WEIGHT = request.objective_weights.cohort_gaps
+    LECTURER_IDLE_WEIGHT = request.objective_weights.lecturer_idle
+    COHORT_ROOM_CHANGE_WEIGHT = request.objective_weights.cohort_room_changes
+
+    room_waste_var = objective_debug_vars["room_waste"]
+    cohort_gap_var = objective_debug_vars["cohort_gap_penalty"]
+    lecturer_idle_var = objective_debug_vars["lecturer_idle_penalty"]
+    cohort_room_change_var = objective_debug_vars["cohort_room_change_penalty"]
+
+    room_waste = solver.Value(room_waste_var) if room_waste_var is not None else 0
+    cohort_gaps = solver.Value(cohort_gap_var) if cohort_gap_var is not None else 0
+    lecturer_idle = solver.Value(lecturer_idle_var) if lecturer_idle_var is not None else 0
+    cohort_room_changes = (
+        solver.Value(cohort_room_change_var)
+        if cohort_room_change_var is not None
+        else 0
+    )
+
+    room_contribution = (
+        ROOM_WASTE_WEIGHT * room_waste
+        if room_waste_var is not None
+        else 0
+    )
+    cohort_contribution = (
+        COHORT_GAP_WEIGHT * cohort_gaps
+        if cohort_gap_var is not None
+        else 0
+    )
+    lecturer_idle_contribution = (
+        LECTURER_IDLE_WEIGHT * lecturer_idle
+        if lecturer_idle_var is not None
+        else 0
+    )
+    cohort_room_change_contribution = (
+        COHORT_ROOM_CHANGE_WEIGHT * cohort_room_changes
+        if cohort_room_change_var is not None
+        else 0
+    )
+
+    print("\n================================================")
+    print("            OBJECTIVE DEBUG")
+    print("================================================")
+    print("Target session:", target_id)
+    print("Time mode:", change_plan["time"]["mode"])
+    print("Room mode:", change_plan["room"]["mode"])
+    print("Lecturer mode:", change_plan["lecturer"]["mode"])
+    print("------------------------------------------------")
+    print("Room capacity waste active:", room_waste_var is not None)
+    print("Room capacity waste:", room_waste)
+    print(
+        f"Room contribution: {ROOM_WASTE_WEIGHT} * {room_waste} "
+        f"= {room_contribution}"
+    )
+    print("Cohort gap objective active:", cohort_gap_var is not None)
+    print("Cohort gap slots:", cohort_gaps)
+    print(
+        f"Cohort contribution: {COHORT_GAP_WEIGHT} * {cohort_gaps} "
+        f"= {cohort_contribution}"
+    )
+    print("Lecturer idle objective active:", lecturer_idle_var is not None)
+    print("Lecturer idle slots:", lecturer_idle)
+    print(
+        f"Lecturer idle contribution: {LECTURER_IDLE_WEIGHT} * {lecturer_idle} "
+        f"= {lecturer_idle_contribution}"
+    )
+    print(
+        "Cohort room-change objective active:",
+        cohort_room_change_var is not None,
+    )
+    print("Cohort back-to-back room changes:", cohort_room_changes)
+    print(
+        f"Cohort room-change contribution: {COHORT_ROOM_CHANGE_WEIGHT} "
+        f"* {cohort_room_changes} = {cohort_room_change_contribution}"
+    )
+    print("------------------------------------------------")
+    print("Weighted objective score:", objective_score)
 
     return {
         "status": "feasible",
@@ -1192,7 +1960,7 @@ def solve_reschedule(request: RescheduleRequestIn, db):
             )
         ],
         "additional_changes": additional_changes,
-        "objective_score": room_capacity_waste_score,
+        "objective_score": objective_score,
     }
 # endregion
 

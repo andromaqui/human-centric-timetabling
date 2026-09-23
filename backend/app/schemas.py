@@ -2,7 +2,6 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import Enum
 from typing import Literal
-from pydantic import BaseModel
 
 
 class WorkingSessionMoveIn(BaseModel):
@@ -16,7 +15,7 @@ class WorkingDayRequestIn(BaseModel):
     day: str
     moves: list[WorkingSessionMoveIn] = Field(default_factory=list)
 
-    
+
 class TemporaryConstraintDeactivation(BaseModel):
     constraint_id: str
 
@@ -38,6 +37,24 @@ class ChangeMode(str, Enum):
     FIND = "find"
 
 
+class ObjectiveWeights(BaseModel):
+    """
+    User-selected weights for the soft optimization objectives.
+
+    The frontend uses a 0-100 scale:
+      0   = objective has no influence
+      100 = highest user-selectable priority
+
+    Defaults are 50 so requests from older frontend code that do not
+    include objective_weights continue to work.
+    """
+
+    lecturer_idle: int = Field(default=50, ge=0, le=100)
+    cohort_gaps: int = Field(default=50, ge=0, le=100)
+    cohort_room_changes: int = Field(default=50, ge=0, le=100)
+    room_waste: int = Field(default=50, ge=0, le=100)
+
+
 class RescheduleRequestIn(BaseModel):
     session_id: str
 
@@ -55,6 +72,10 @@ class RescheduleRequestIn(BaseModel):
     ] = Field(default_factory=list)
 
     max_additional_changes: int | None = None
+
+    objective_weights: ObjectiveWeights = Field(
+        default_factory=ObjectiveWeights
+    )
 
 
 # TODO: 1 START Add these (reuse pattern from InstanceOut, but scoped so the frontend can group by lecturer/cohort):
@@ -114,6 +135,8 @@ class CohortOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
 # TODO: 2
 
 
@@ -252,6 +275,7 @@ class ProgramOut(BaseModel):
     class Config:
         from_attributes = True
 
+
 class CandidateSolutionCreate(BaseModel):
     id: str
     name: str | None = None
@@ -278,7 +302,7 @@ class CandidateSolutionCreate(BaseModel):
     solver_metadata: dict | None = None
 
 
-class AllowedRelaxationIn(BaseModel):
+class ProtectedConstraintIn(BaseModel):
     constraint_id: str
     instance_type: str
     instance_id: str
@@ -288,4 +312,6 @@ class AllowedRelaxationIn(BaseModel):
 class MixedRecoveryRequestIn(BaseModel):
     request: RescheduleRequestIn
     max_perturbations: int
-    allowed_relaxations: list[AllowedRelaxationIn] = Field(default_factory=list)
+    protected_constraints: list[ProtectedConstraintIn] = Field(
+        default_factory=list
+    )

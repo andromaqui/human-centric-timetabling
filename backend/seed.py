@@ -39,6 +39,7 @@ cohorts = [
     models.Cohort(id="ds-y2", name="DS Year 2", program_id="ds"),
     models.Cohort(id="se-y1", name="SE Year 1", program_id="se"),
     models.Cohort(id="se-y2", name="SE Year 2", program_id="se"),
+    models.Cohort(id="ds-y3", name="DS Year 3", program_id="ds"),
 ]
 
 db.add_all(cohorts)
@@ -55,6 +56,7 @@ lecturers = [
     models.Lecturer(id="lecturer-4", name="Dr. Tom Baxter"),
     models.Lecturer(id="lecturer-5", name="Prof. Linda Osei"),
     models.Lecturer(id="lecturer-6", name="Dr. Samuel Ruiz"),
+    models.Lecturer(id="lecturer-7", name="Dr. Sarah Murphy"),
 ]
 
 db.add_all(lecturers)
@@ -330,6 +332,48 @@ modules = [
         required_capacity=35,
         required_equipment="Whiteboard,Projector",
     ),
+models.Module(
+    id="module-12",
+    code="DS310",
+    title="Data Engineering",
+    required_capacity=40,
+    required_equipment="Projector",
+),
+models.Module(
+    id="module-13",
+    code="DS320",
+    title="Business Intelligence",
+    required_capacity=40,
+    required_equipment="Projector",
+),
+models.Module(
+    id="module-14",
+    code="DS360",
+    title="Data Mining",
+    required_capacity=40,
+    required_equipment="Projector",
+),
+models.Module(
+    id="module-15",
+    code="DS370",
+    title="Natural Language Processing",
+    required_capacity=40,
+    required_equipment="Projector",
+),
+models.Module(
+    id="module-16",
+    code="DS380",
+    title="Advanced Machine Learning",
+    required_capacity=40,
+    required_equipment="Projector",
+),
+models.Module(
+    id="module-17",
+    code="DS390",
+    title="Data Ethics and Governance",
+    required_capacity=40,
+    required_equipment="Projector",
+),
 ]
 
 db.add_all(modules)
@@ -585,6 +629,105 @@ sessions_data = [
         "program_ids": ["ds"],
         "cohort_ids": ["ds-y1"],
     },
+# ============================================================
+# CONTROLLED RECOVERY SCENARIO — MINIMUM 2 PERTURBATIONS
+#
+# Experimental request:
+#   Move session-17 (Sarah Murphy + DS Year 3)
+#   from Thursday 14:00-16:00 to Friday 14:00-16:00.
+#
+# Before the request:
+#   - Sarah teaches 4h on Friday, but NOT DS Year 3.
+#   - DS Year 3 has 4h on Friday, but with OTHER lecturers.
+#
+# After the request both reach 6h, violating their respective
+# relaxable max-hours-per-day constraints.
+#
+# Crucially, no single existing Friday session belongs to BOTH
+# Sarah and DS Year 3. Therefore perturbation-only recovery needs
+# at least two moves: one Sarah session + one DS Year 3 session.
+#
+# TRADE-OFF ANCHOR:
+#   DS Year 3 also has DS390 on Tuesday 09:00-11:00 in A101.
+#   If a displaced 2h DS Year 3 Friday class is placed immediately
+#   after it (Tuesday 11:00-13:00), the solver can face a useful
+#   room-choice trade-off:
+#       A101 (70 seats): same room -> fewer cohort room changes,
+#                        but 30 unused seats for a 40-seat class.
+#       C302 (40 seats): exact capacity -> no wasted seats,
+#                        but requires a cohort room change.
+#   Keep cohort-gap and lecturer-idle effects equal where possible
+#   so the visible trade-off is capacity waste vs room changes.
+# ============================================================
+
+{
+    "id": "session-13",
+    "module_id": "module-12",
+    "lecturer_id": "lecturer-7",
+    "room_id": "room-a101",
+    "type": "lecture",
+    "start": "2026-09-25T09:00:00",
+    "end": "2026-09-25T11:00:00",
+    "program_ids": ["ds"],
+    "cohort_ids": ["ds-y2"],
+},
+{
+    "id": "session-14",
+    "module_id": "module-13",
+    "lecturer_id": "lecturer-7",
+    "room_id": "room-c302",
+    "type": "lecture",
+    "start": "2026-09-25T11:00:00",
+    "end": "2026-09-25T13:00:00",
+    "program_ids": ["ds"],
+    "cohort_ids": ["ds-y2"],
+},
+{
+    "id": "session-15",
+    "module_id": "module-15",
+    "lecturer_id": "lecturer-3",
+    "room_id": "room-d105",
+    "type": "lecture",
+    "start": "2026-09-25T09:00:00",
+    "end": "2026-09-25T11:00:00",
+    "program_ids": ["ds"],
+    "cohort_ids": ["ds-y3"],
+},
+{
+    "id": "session-16",
+    "module_id": "module-16",
+    "lecturer_id": "lecturer-5",
+    "room_id": "room-e210",
+    "type": "lecture",
+    "start": "2026-09-25T11:00:00",
+    "end": "2026-09-25T13:00:00",
+    "program_ids": ["ds"],
+    "cohort_ids": ["ds-y3"],
+},
+{
+    "id": "session-17",
+    "module_id": "module-14",
+    "lecturer_id": "lecturer-7",
+    "room_id": "room-d105",
+    "type": "lecture",
+    "start": "2026-09-24T14:00:00",
+    "end": "2026-09-24T16:00:00",
+    "program_ids": ["ds"],
+    "cohort_ids": ["ds-y3"],
+},
+{
+    # Anchor session for the capacity-vs-room-change trade-off.
+    # A moved DS Y3 class can sit immediately after this at Tue 11:00-13:00.
+    "id": "session-18",
+    "module_id": "module-17",
+    "lecturer_id": "lecturer-4",
+    "room_id": "room-a101",
+    "type": "lecture",
+    "start": "2026-09-22T09:00:00",
+    "end": "2026-09-22T11:00:00",
+    "program_ids": ["ds"],
+    "cohort_ids": ["ds-y3"],
+},
 ]
 
 

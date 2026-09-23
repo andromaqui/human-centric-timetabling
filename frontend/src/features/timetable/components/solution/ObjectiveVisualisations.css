@@ -1,0 +1,234 @@
+.objective-visualisation {
+  margin-top: 18px;
+  padding: 20px;
+  border: 1px solid #d9e0ea;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.objective-visualisation-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.objective-visualisation-header h3 {
+  margin: 4px 0 6px;
+}
+
+.objective-visualisation-header p {
+  margin: 0;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.objective-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #64748b;
+}
+
+.objective-selector {
+  min-width: 220px;
+}
+
+.objective-selector label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.objective-selector select {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: white;
+}
+
+.objective-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.objective-summary span {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.objective-session-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.objective-session {
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+}
+
+.objective-session.proposed,
+.cohort-session.proposed {
+  border-color: #818cf8;
+  background: #f8faff;
+}
+
+.objective-session-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.objective-session-heading > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.objective-session-heading span {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.objective-proposed-badge {
+  align-self: flex-start;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4f46e5;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.objective-session-meta {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.capacity-values {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 14px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.capacity-track {
+  height: 9px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.capacity-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #6366f1;
+}
+
+.capacity-result {
+  margin-top: 7px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.capacity-shortage {
+  color: #b91c1c;
+}
+
+.cohort-days {
+  margin-top: 20px;
+}
+
+.cohort-day + .cohort-day {
+  margin-top: 24px;
+}
+
+.cohort-day h4 {
+  margin: 0 0 10px;
+}
+
+.cohort-day-sessions {
+  display: grid;
+  gap: 0;
+}
+
+.cohort-session {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.cohort-session > div:first-child {
+  display: flex;
+  flex-direction: column;
+}
+
+.cohort-session > div:first-child span {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.cohort-session-time {
+  color: #475569;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.cohort-gap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 14px;
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cohort-gap-line {
+  flex: 1;
+  height: 1px;
+  border-top: 1px dashed #d97706;
+}
+
+.objective-empty {
+  margin: 16px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+@media (max-width: 700px) {
+  .objective-visualisation-header {
+    flex-direction: column;
+  }
+
+  .objective-selector {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .cohort-session {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   ArrowRight,
   CalendarRange,
@@ -12,6 +12,8 @@ import {
 import { StakeholderViolationsPanel } from "./StakeholderViolationsPanel";
 import { HistoricalImpactSummary } from "../../../impact/components/HistoricalImpactSummary";
 import { api } from "../../../../shared/api/client";
+import { PerturbationImpactModal, type PerturbationImpact,} from "./PerturbationImpactModal";
+import { PerturbationImpactComparisonModal } from "./PerturbationImpactComparisonModal";
 
 import {
   fetchHistoricalImpacts,
@@ -22,6 +24,9 @@ import {
 
 import "./Step4solution.css";
 import { RequestedChangeSummary } from "../RequestedChangeSummary";
+import { RoomCapacityVisualisation } from "./RoomCapacityVisualisation";
+import { CohortGapVisualisation } from "./CohortGapVisualisation";
+import { CohortRoomChangeVisualisation } from "./CohortRoomChangeVisualisation";
 
 type RelaxableConstraintInstance = {
   instance_id: string;
@@ -77,6 +82,29 @@ type AdditionalChange = {
 };
 
 
+type PerturbationAlternative = {
+  rank: number;
+  objective_score: number | null;
+  session_id: string;
+  start_slot: number;
+  day: string;
+  time: string;
+  room_id: string;
+  lecturer_id: string;
+  perturbation_count: number;
+  additional_changes: AdditionalChange[];
+  proven_optimal_for_remaining_model?: boolean;
+  impact?: PerturbationImpact;
+};
+
+type PerturbationAlternativesResponse = {
+  status: "feasible" | "infeasible" | "invalid";
+  reason: string | null;
+  minimum_perturbations: number | null;
+  solution_count?: number;
+  solutions: PerturbationAlternative[];
+};
+
 type RecoveryOptions = {
   can_perturb: boolean;
   minimum_perturbations: number | null;
@@ -106,7 +134,7 @@ type MixedRecoveryResult = {
   additional_changes?: AdditionalChange[];
   perturbation_count?: number;
   max_perturbations?: number;
-  allowed_relaxations?: TemporaryConstraintDeactivation[];
+  protected_constraints?: TemporaryConstraintDeactivation[];
   used_relaxations?: TemporaryConstraintDeactivation[];
   relaxation_count?: number;
 };
@@ -136,6 +164,7 @@ type RescheduleResponse =
 type NamedEntity = {
   id: string;
   name: string;
+  capacity?: number;
 };
 
 type ModuleLike = {
@@ -143,6 +172,8 @@ type ModuleLike = {
   code?: string;
   name?: string;
   title?: string;
+  requiredCapacity?: number | null;
+  required_capacity?: number | null;
 };
 
 
@@ -151,7 +182,12 @@ type SessionLike = {
   moduleId?: string;
   lecturerId: string;
   room?: string;
+  roomId?: string | null;
   cohortIds: string[];
+  start?: string;
+  end?: string;
+  day?: string;
+  time?: string;
 };
 
 
@@ -238,7 +274,7 @@ type Step4SolutionProps = {
   solverLoading: boolean;
   solverError: string | null;
   solverResult: RescheduleResponse | null;
-  perturbationPreview: RescheduleResponse | null;
+  perturbationAlternatives: PerturbationAlternativesResponse | null;
   mixedRecoveryRequest: RescheduleRequest;
 
   selectedModuleLabel: string | null;
@@ -322,7 +358,7 @@ export function Step4Solution({
   solverLoading,
   solverError,
   solverResult,
-  perturbationPreview,
+  perturbationAlternatives,
   mixedRecoveryRequest,
 
   selectedModuleLabel,
@@ -393,13 +429,13 @@ export function Step4Solution({
   const [mixedPerturbationLimit, setMixedPerturbationLimit] = useState(1);
 
   const [relaxableConstraints, setRelaxableConstraints] = useState<RelaxableConstraintGroups | null>(null);
-  const [allowedRelaxationIds, setAllowedRelaxationIds] = useState<string[]>([]);
-  const [allowedRelaxationsOpen, setAllowedRelaxationsOpen] = useState(false);
+  const [protectedConstraintIds, setProtectedConstraintIds] = useState<string[]>([]);
+  const [protectedConstraintsOpen, setProtectedConstraintsOpen] = useState(false);
   const [mixedRecoveryLoading, setMixedRecoveryLoading] = useState(false);
   const [mixedRecoveryError, setMixedRecoveryError] = useState<string | null>(null);
-  const [mixedRecoveryResult, setMixedRecoveryResult] =
-    useState<MixedRecoveryResult | null>(null);
-
+  const [mixedRecoveryResult, setMixedRecoveryResult] = useState<MixedRecoveryResult | null>(null);
+  const [selectedPerturbationImpact, setSelectedPerturbationImpact] = useState<PerturbationImpact | null>(null);
+  const [showImpactComparison, setShowImpactComparison] = useState(false);
   /*
    * Historical impacts used in the Relax Constraints section.
    *
@@ -455,8 +491,9 @@ const allRelaxableConstraints = relaxableConstraints
     ]
   : [];
 
-const selectedAllowedRelaxations = allRelaxableConstraints.filter(
-  (constraint) => allowedRelaxationIds.includes(constraint.instance_id),
+const selectedProtectedConstraints = allRelaxableConstraints.filter(
+  (constraint) =>
+    protectedConstraintIds.includes(constraint.instance_id),
 );
 
 async function findMixedRecoverySolution() {
@@ -465,12 +502,18 @@ async function findMixedRecoverySolution() {
   setMixedRecoveryResult(null);
 
   try {
-    const allowedRelaxations: TemporaryConstraintDeactivation[] =
-      selectedAllowedRelaxations.map((constraint) => ({
+    // The user selects constraints that MUST remain enforced.
+    //
+    // IMPORTANT:
+    // The checkbox uses the database constraint-instance row id,
+    // but the mixed solver expects the stakeholder/entity id:
+    //   - lecturer id for lecturer constraints
+    //   - cohort id for cohort constraints
+    //   - session id for session constraints
+    const protectedConstraints: TemporaryConstraintDeactivation[] =
+      selectedProtectedConstraints.map((constraint) => ({
         constraint_id: constraint.constraint_id,
         instance_type: constraint.instance_type,
-        // IMPORTANT: the mixed solver expects the stakeholder/entity id,
-        // not the database constraint-instance row id used by the checkbox.
         instance_id: constraint.stakeholder_id,
         day: constraint.day,
       }));
@@ -483,14 +526,19 @@ async function findMixedRecoverySolution() {
           temporarily_deactivated_constraints: [],
           max_additional_changes: null,
         },
+
         max_perturbations: mixedPerturbationLimit,
-        allowed_relaxations: allowedRelaxations,
+
+        // All relaxable constraints may be relaxed unless
+        // the user explicitly protects them.
+        protected_constraints: protectedConstraints,
       },
     );
 
     setMixedRecoveryResult(result);
   } catch (error) {
     console.error("Failed to run mixed recovery:", error);
+
     setMixedRecoveryError(
       error instanceof Error
         ? error.message
@@ -509,16 +557,17 @@ async function findMixedRecoverySolution() {
    * are those from the concrete combination the user
    * diagnosed.
    */
-  const activeViolations: Violation[] =
-    needsInteractiveDiagnosis
-      ? (diagResult?.violations ?? [])
-      : solverResult &&
-          solverResult.status !== "feasible"
-        ? (
-            solverResult.diagnostics
-              ?.violations ?? []
-          )
-        : [];
+  const activeViolations = useMemo<Violation[]>(() => {
+    if (needsInteractiveDiagnosis) {
+      return diagResult?.violations ?? [];
+    }
+
+    if (solverResult && solverResult.status !== "feasible") {
+      return solverResult.diagnostics?.violations ?? [];
+    }
+
+    return [];
+  }, [needsInteractiveDiagnosis, diagResult, solverResult]);
 
 
   const hasActiveDiagnosis =
@@ -537,7 +586,9 @@ async function findMixedRecoverySolution() {
    */
   useEffect(() => {
     if (selectedRecoveryOption !== "relax") {
-      setHistoricalImpactsByKey({});
+      setHistoricalImpactsByKey((current) =>
+        Object.keys(current).length === 0 ? current : {},
+      );
       return;
     }
 
@@ -563,7 +614,9 @@ async function findMixedRecoverySolution() {
     );
 
     if (uniqueConfigs.length === 0) {
-      setHistoricalImpactsByKey({});
+      setHistoricalImpactsByKey((current) =>
+        Object.keys(current).length === 0 ? current : {},
+      );
       return;
     }
 
@@ -929,6 +982,169 @@ function getAdditionalChangeSessionLabel(
   }
 
 
+  const targetSession = sessions.find(
+    (session) => session.id === solverResult?.session_id,
+  );
+
+  const roomCapacityRooms = rooms
+    .filter((room) => typeof room.capacity === "number")
+    .map((room) => ({
+      id: room.id,
+      name: room.name,
+      capacity: room.capacity as number,
+    }));
+
+  const roomCapacitySessions = sessions.flatMap((session) => {
+    const module = modules.find((item) => item.id === session.moduleId);
+    const requiredCapacity =
+      module?.requiredCapacity ?? module?.required_capacity ?? null;
+
+    const isTarget = session.id === solverResult?.session_id;
+    const roomId = isTarget
+      ? solverResult?.room_id ?? session.roomId ?? session.room ?? null
+      : session.roomId ?? session.room ?? null;
+
+    const day = isTarget
+      ? solverResult?.day ?? session.day
+      : session.day;
+    const time = isTarget
+      ? solverResult?.time ?? session.time
+      : session.time;
+
+    if (!roomId || requiredCapacity == null || !day || !time) return [];
+
+    return [{
+      id: session.id,
+      moduleCode: module?.code ?? module?.id ?? session.moduleId ?? session.id,
+      moduleName: module?.name ?? module?.title,
+      day: DAY_LABELS[day.slice(0, 3).toLowerCase()] ?? day,
+      time,
+      roomId,
+      requiredCapacity,
+    }];
+  });
+
+  const cohortGapSessions = sessions.flatMap((session) => {
+    const module = modules.find((item) => item.id === session.moduleId);
+    const isTarget = session.id === solverResult?.session_id;
+
+    let day = session.day;
+    let startTime = session.time;
+    let endTime: string | undefined;
+
+    if (session.start) {
+      const startDate = new Date(session.start);
+      if (!Number.isNaN(startDate.getTime())) {
+        day = startDate.toLocaleDateString("en-IE", { weekday: "long" });
+        startTime = startDate.toTimeString().slice(0, 5);
+      }
+    }
+
+    if (session.end) {
+      const endDate = new Date(session.end);
+      if (!Number.isNaN(endDate.getTime())) {
+        endTime = endDate.toTimeString().slice(0, 5);
+      }
+    }
+
+    if (isTarget && solverResult?.status === "feasible") {
+      day = solverResult.day ?? day;
+      startTime = solverResult.time ?? startTime;
+
+      // Preserve the target session's existing duration when moving it.
+      if (session.start && session.end && startTime) {
+        const oldStart = new Date(session.start);
+        const oldEnd = new Date(session.end);
+        const durationMinutes = Math.round(
+          (oldEnd.getTime() - oldStart.getTime()) / 60000,
+        );
+        const [hours, minutes] = startTime.split(":").map(Number);
+        if (Number.isFinite(hours) && Number.isFinite(minutes) && durationMinutes > 0) {
+          const total = hours * 60 + minutes + durationMinutes;
+          endTime = `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+        }
+      }
+    }
+
+    if (!day || !startTime || !endTime) return [];
+
+    return [{
+      id: session.id,
+      moduleCode: module?.code ?? module?.id ?? session.moduleId ?? session.id,
+      moduleName: module?.name ?? module?.title,
+      cohortIds: session.cohortIds,
+      day: DAY_LABELS[day.slice(0, 3).toLowerCase()] ?? day,
+      startTime,
+      endTime,
+    }];
+  });
+
+  const cohortRoomChangeSessions = sessions.flatMap((session) => {
+    const module = modules.find((item) => item.id === session.moduleId);
+    const isTarget = session.id === solverResult?.session_id;
+
+    let day = session.day;
+    let startTime = session.time;
+    let endTime: string | undefined;
+    let roomId = session.roomId ?? session.room ?? null;
+
+    if (session.start) {
+      const startDate = new Date(session.start);
+      if (!Number.isNaN(startDate.getTime())) {
+        day = startDate.toLocaleDateString("en-IE", { weekday: "long" });
+        startTime = startDate.toTimeString().slice(0, 5);
+      }
+    }
+
+    if (session.end) {
+      const endDate = new Date(session.end);
+      if (!Number.isNaN(endDate.getTime())) {
+        endTime = endDate.toTimeString().slice(0, 5);
+      }
+    }
+
+    if (isTarget && solverResult?.status === "feasible") {
+      day = solverResult.day ?? day;
+      startTime = solverResult.time ?? startTime;
+      roomId = solverResult.room_id ?? roomId;
+
+      // Preserve the target session's existing duration when moving it.
+      if (session.start && session.end && startTime) {
+        const oldStart = new Date(session.start);
+        const oldEnd = new Date(session.end);
+        const durationMinutes = Math.round(
+          (oldEnd.getTime() - oldStart.getTime()) / 60000,
+        );
+
+        const [hours, minutes] = startTime.split(":").map(Number);
+        if (
+          Number.isFinite(hours) &&
+          Number.isFinite(minutes) &&
+          durationMinutes > 0
+        ) {
+          const total = hours * 60 + minutes + durationMinutes;
+          endTime = `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+        }
+      }
+    }
+
+    if (!day || !startTime || !endTime || !roomId) return [];
+
+    return [{
+      id: session.id,
+      moduleCode: module?.code ?? module?.id ?? session.moduleId ?? session.id,
+      moduleName: module?.name ?? module?.title,
+      cohortIds: session.cohortIds,
+      day: DAY_LABELS[day.slice(0, 3).toLowerCase()] ?? day,
+      startTime,
+      endTime,
+      roomId,
+      roomName: getRoomName(roomId),
+    }];
+  });
+
+  const initialCohortId = targetSession?.cohortIds?.[0] ?? null;
+
   return (
     <>
       <h2>Solution</h2>
@@ -966,150 +1182,67 @@ function getAdditionalChangeSessionLabel(
 
       {/* FEASIBLE FLOW */}
 
-      {!solverLoading &&
-        solverResult?.status ===
-          "feasible" && (
+      {!solverLoading && solverResult?.status ==="feasible" && (
           <div className="solution-options">
-            <div className="solution-card recommended">
-              <div className="solution-card-header">
-                <div>
-                  <h4>
-                    Feasible solution
-                  </h4>
 
-                  <div className="solution-class-name">
-                    {selectedModuleLabel ??
-                      selectedEventFallbackId}
+            {(solverResult.objective_score != null ||
+              originalModes?.room === "find" ||
+              originalModes?.time === "find") && (
+              <section style={{ marginTop: "22px" }}>
+                <div
+                  style={{
+                    padding: "16px",
+                    border: "1px solid #d9e0ea",
+                    borderRadius: "10px",
+                    background: "#f8fafc",
+                  }}
+                >
+                  <div style={{ fontSize: "13px", color: "#64748b" }}>
+                    Weighted objective score
+                  </div>
+                  <div style={{ marginTop: "4px", fontSize: "28px", fontWeight: 700 }}>
+                    {solverResult.objective_score ?? "—"}
+                  </div>
+                  <div style={{ marginTop: "4px", fontSize: "13px", color: "#64748b" }}>
+                    Lower scores indicate a lower weighted objective penalty.
                   </div>
                 </div>
 
-                <span className="solution-tag">
-                  Recommended
-                </span>
-              </div>
+                <div style={{ marginTop: "22px" }}>
+                  <h3 style={{ marginBottom: "6px" }}>Objective impacts</h3>
+                  <p className="step-description" style={{ marginTop: 0 }}>
+                    Explore the timetable characteristics behind this solution's objective score.
+                  </p>
 
+                  {originalModes?.room === "find" && (
+                    <RoomCapacityVisualisation
+                      rooms={roomCapacityRooms}
+                      sessions={roomCapacitySessions}
+                      initialRoomId={solverResult.room_id ?? null}
+                      proposedSessionId={solverResult.session_id}
+                    />
+                  )}
 
-              <div className="change-list">
+                  {(originalModes?.time === "find" || originalModes?.room === "find") && (
+                    <CohortGapVisualisation
+                      cohorts={cohorts}
+                      sessions={cohortGapSessions}
+                      initialCohortId={initialCohortId}
+                      proposedSessionId={solverResult.session_id}
+                    />
+                  )}
 
-                {/* Time */}
-
-                {(originalModes?.time ===
-                  "specific" ||
-                  originalModes?.time ===
-                    "find") && (
-                  <div className="change-item">
-                    <div className="change-item-label">
-                      Time
-                    </div>
-
-                    <div className="change-item-values">
-                      <span className="change-from">
-                        {selectedEventDayTime ??
-                          "—"}
-                      </span>
-
-                      <span className="change-arrow">
-                        →
-                      </span>
-
-                      <span className="change-to">
-                        {DAY_LABELS[
-                          solverResult.day
-                            ?.slice(0, 3)
-                            .toLowerCase() ??
-                            ""
-                        ] ??
-                          solverResult.day}{" "}
-                        {solverResult.time}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-
-                {/* Room */}
-
-                {(originalModes?.room ===
-                  "specific" ||
-                  originalModes?.room ===
-                    "find") && (
-                  <div className="change-item">
-                    <div className="change-item-label">
-                      Room
-                    </div>
-
-                    <div className="change-item-values">
-                      <span className="change-from">
-                        {selectedEventRoom ??
-                          "—"}
-                      </span>
-
-                      <span className="change-arrow">
-                        →
-                      </span>
-
-                      <span className="change-to">
-                        {solverResult.room_id
-                          ? getRoomName(
-                              solverResult.room_id,
-                            )
-                          : "—"}
-                      </span>
-                    </div>
-
-                    {originalModes?.room === "find" &&
-                      solverResult.objective_score != null && (
-                        <div
-                          style={{
-                            marginTop: "6px",
-                            fontSize: "13px",
-                            color: "#64748b",
-                          }}
-                        >
-                          Room capacity waste:{" "}
-                          <strong>
-                            {solverResult.objective_score} seats
-                          </strong>
-                        </div>
-                      )}
-                  </div>
-                )}
-
-
-                {/* Lecturer */}
-
-                {(originalModes?.lecturer ===
-                  "specific" ||
-                  originalModes?.lecturer ===
-                    "find") && (
-                  <div className="change-item">
-                    <div className="change-item-label">
-                      Lecturer
-                    </div>
-
-                    <div className="change-item-values">
-                      <span className="change-from">
-                        {selectedEventLecturerName ??
-                          "—"}
-                      </span>
-
-                      <span className="change-arrow">
-                        →
-                      </span>
-
-                      <span className="change-to">
-                        {solverResult.lecturer_id
-                          ? getLecturerName(
-                              solverResult.lecturer_id,
-                            )
-                          : "—"}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
+                  {(originalModes?.time === "find" || originalModes?.room === "find") && (
+                    <CohortRoomChangeVisualisation
+                      cohorts={cohorts}
+                      sessions={cohortRoomChangeSessions}
+                      initialCohortId={initialCohortId}
+                      proposedSessionId={solverResult.session_id}
+                    />
+                  )}
+                </div>
+              </section>
+            )}
 
             {(
               solverResult.additional_changes
@@ -2017,263 +2150,12 @@ function getAdditionalChangeSessionLabel(
                               No constraints will be relaxed.
                             </span>
 
-                            {minimumPerturbations !== null && !perturbationPreview && (
+                            {minimumPerturbations !== null && (
                               <p style={{ marginTop: "10px" }}>
                                 Minimum additional classes affected:{" "}
                                 <strong>{minimumPerturbations}</strong>
                               </p>
                             )}
-
-                        {perturbationPreview?.status === "feasible" &&
-                          perturbationPreview.additional_changes &&
-                          perturbationPreview.additional_changes.length > 0 && (
-                            <div
-                              style={{
-                                marginTop: "18px",
-                                paddingTop: "16px",
-                                borderTop: "1px solid #d9e0ea",
-                              }}
-                            >
-                              <strong
-                                style={{
-                                  display: "block",
-                                  fontSize: "16px",
-                                  marginBottom: "16px",
-                                }}
-                              >
-                                Proposed rearrangement
-                              </strong>
-
-                              {/* PRIMARY CHANGE */}
-                              <div
-                                style={{
-                                  padding: "14px",
-                                  border: "1px solid #c7d2fe",
-                                  borderRadius: "10px",
-                                  background: "#f8faff",
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    fontSize: "12px",
-                                    fontWeight: 700,
-                                    color: "#4f46e5",
-                                    textTransform: "uppercase",
-                                    letterSpacing: "0.04em",
-                                    marginBottom: "6px",
-                                  }}
-                                >
-                                  Primary change · Your request
-                                </div>
-
-                                <strong>
-                                  {selectedModuleLabel ?? selectedEventFallbackId}
-                                </strong>
-
-                                {/* TIME */}
-                                <div style={{ marginTop: "12px" }}>
-                                  <div
-                                    style={{
-                                      fontSize: "12px",
-                                      fontWeight: 600,
-                                      color: "#64748b",
-                                    }}
-                                  >
-                                    Time
-                                  </div>
-
-                                  <div>
-                                    {selectedEventDayTime ?? "—"}
-                                    {" → "}
-                                    {requestedTimeLabel}
-                                  </div>
-                                </div>
-
-                                {/* ROOM */}
-                                <div style={{ marginTop: "8px" }}>
-                                  <div
-                                    style={{
-                                      fontSize: "12px",
-                                      fontWeight: 600,
-                                      color: "#64748b",
-                                    }}
-                                  >
-                                    Room
-                                  </div>
-
-                                  <div>
-                                    {selectedEventRoom ?? "—"}
-                                    {" → "}
-                                    {requestedRoomLabel}
-                                  </div>
-                                </div>
-
-                                {/* LECTURER */}
-                                <div style={{ marginTop: "8px" }}>
-                                  <div
-                                    style={{
-                                      fontSize: "12px",
-                                      fontWeight: 600,
-                                      color: "#64748b",
-                                    }}
-                                  >
-                                    Lecturer
-                                  </div>
-
-                                  <div>
-                                    {selectedEventLecturerName ?? "—"}
-                                    {" → "}
-                                    {requestedLecturerLabel}
-                                  </div>
-                                </div>
-                              </div>
-
-                              {/* ADDITIONAL CHANGES */}
-                              <div
-                                style={{
-                                  marginTop: "18px",
-                                  paddingTop: "16px",
-                                  borderTop: "1px solid #e5e7eb",
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    fontSize: "12px",
-                                    fontWeight: 700,
-                                    color: "#64748b",
-                                    textTransform: "uppercase",
-                                    letterSpacing: "0.04em",
-                                  }}
-                                >
-                                  Additional changes
-                                </div>
-
-                                <p style={{ margin: "6px 0 0" }}>
-                                  {perturbationPreview.additional_changes.length} other{" "}
-                                  {perturbationPreview.additional_changes.length === 1
-                                    ? "class must be moved"
-                                    : "classes must be moved"}{" "}
-                                  to make your request possible.
-                                </p>
-
-                                {perturbationPreview.additional_changes.map((change) => {
-                                  const session = getAdditionalChangeSession(
-                                    change.session_id,
-                                  );
-
-                                  return (
-                                    <div
-                                    key={change.session_id}
-                                    style={{
-                                          marginTop: "14px",
-                                          padding: "14px",
-                                          border: "1px solid #f3d69a",
-                                          borderRadius: "10px",
-                                          background: "#fff8e6",
-                                        }}
-                                    >
-                                   <div>
-                                                      <strong
-                                                        style={{
-                                                          display: "block",
-                                                          fontSize: "16px",
-                                                        }}
-                                                      >
-                                                        {getAdditionalChangeSessionLabel(
-                                                          change.session_id,
-                                                        )}
-                                                      </strong>
-
-                                                      {session && (
-                                                        <div
-                                                          style={{
-                                                            marginTop: "6px",
-                                                            fontSize: "13px",
-                                                            color: "#64748b",
-                                                          }}
-                                                        >
-                                                          <div>
-                                                            <strong>Lecturer:</strong>{" "}
-                                                            {getLecturerName(session.lecturerId)}
-                                                          </div>
-
-                                                          {session.room && (
-                                                            <div>
-                                                              <strong>Current room:</strong>{" "}
-                                                              {session.room}
-                                                            </div>
-                                                          )}
-                                                        </div>
-                                                      )}
-                                                    </div>
-
-                                    {change.time_changed && (
-                                      <div style={{ marginTop: "10px" }}>
-                                        <div
-                                          style={{
-                                            fontSize: "12px",
-                                            fontWeight: 600,
-                                            color: "#64748b",
-                                          }}
-                                        >
-                                          Time
-                                        </div>
-
-                                        <div>
-                                          {DAY_LABELS[
-                                            change.old_day
-                                              .slice(0, 3)
-                                              .toLowerCase()
-                                          ] ?? change.old_day}{" "}
-                                          {change.old_time}
-                                          {" → "}
-                                          {DAY_LABELS[
-                                            change.new_day
-                                              .slice(0, 3)
-                                              .toLowerCase()
-                                          ] ?? change.new_day}{" "}
-                                          {change.new_time}
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {change.room_changed && (
-                                      <div style={{ marginTop: "8px" }}>
-                                        <div
-                                          style={{
-                                            fontSize: "12px",
-                                            fontWeight: 600,
-                                            color: "#64748b",
-                                          }}
-                                        >
-                                          Room
-                                        </div>
-
-                                        <div>
-                                          {getRoomName(change.old_room_id)}
-                                          {" → "}
-                                          {getRoomName(change.new_room_id)}
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                  );
-                                })}
-
-                                <p
-                                  style={{
-                                    marginTop: "14px",
-                                    marginBottom: 0,
-                                    fontSize: "13px",
-                                    color: "#64748b",
-                                  }}
-                                >
-                                  No constraints are relaxed. Lecturers of additional
-                                  classes remain unchanged.
-                                </p>
-                              </div>
-                            </div>
-                          )}
                           </>
                         ) : (
                           <span className="recovery-disabled-reason">
@@ -2283,24 +2165,219 @@ function getAdditionalChangeSessionLabel(
                         )}
                       </div>
 
-                        {!perturbationPreview && (
-                          <div style={{ marginTop: "auto", paddingTop: "20px" }}>
-                            <button
-                              type="button"
-                              className="find-rearrangements-button"
-                              disabled={!canRearrange || solverLoading}
-                              onClick={onFindRearrangements}
-                            >
-                              Find rearrangement
-                              <ArrowRight size={16} />
-                            </button>
-                          </div>
-                        )}
+                      <div style={{ marginTop: "auto", paddingTop: "20px" }}>
+                        <button
+                          type="button"
+                          className="find-rearrangements-button"
+                          disabled={!canRearrange || solverLoading}
+                          onClick={onFindRearrangements}
+                        >
+                          {perturbationAlternatives?.status === "feasible"
+                            ? "Refresh rearrangements"
+                            : "Find rearrangements"}
+                          <ArrowRight size={16} />
+                        </button>
+                      </div>
                     </div>
                   </div>
 
+                  {perturbationAlternatives?.status === "feasible" &&
+                    perturbationAlternatives.solutions.length > 0 && (
+                      <section
+                        style={{
+                          marginTop: "18px",
+                          padding: "18px",
+                          border: "1px solid #d9e0ea",
+                          borderRadius: "12px",
+                          background: "#f8fafc",
+                        }}
+                      >
+                        <div style={{ marginBottom: "16px" }}>
+                          <span className="infeasible-eyebrow">
+                            PERTURBATION RECOVERY
+                          </span>
+                          <h3 style={{ margin: "6px 0 0" }}>
+                            {perturbationAlternatives.solutions.length}{" "}
+                            {perturbationAlternatives.solutions.length === 1
+                              ? "feasible rearrangement found"
+                              : "feasible rearrangements found"}
+                          </h3>
+                          <p className="step-description" style={{ marginBottom: 0 }}>
+                            Each option keeps all active constraints enforced and moves
+                            the minimum number of additional classes.
+                          </p>
+
+
+                          <button
+                                          type="button"
+                                          onClick={() => setShowImpactComparison(true)}
+                                        >
+                                          Compare impacts
+                                        </button>
+                        </div>
+
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                            gap: "14px",
+                          }}
+                        >
+                          {perturbationAlternatives.solutions.slice(0, 3).map((solution, index) => (
+                            <div
+                              key={`${solution.rank}-${index}`}
+                              className="recovery-option"
+                              style={{ padding: "16px", background: "#ffffff" }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  gap: "12px",
+                                  alignItems: "flex-start",
+                                }}
+                              >
+                                <div>
+                                  <span className="infeasible-eyebrow">
+                                    SOLUTION {solution.rank ?? index + 1}
+                                  </span>
+                                  <h4 style={{ margin: "6px 0 0" }}>
+                                    {solution.perturbation_count}{" "}
+                                    {solution.perturbation_count === 1
+                                      ? "additional class moved"
+                                      : "additional classes moved"}
+                                  </h4>
+                                </div>
+
+                                {solution.objective_score != null && (
+                                  <div style={{ textAlign: "right", fontSize: "13px" }}>
+                                    <div style={{ color: "#64748b" }}>Score</div>
+                                    <strong>{solution.objective_score}</strong>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div style={{ marginTop: "14px" }}>
+                                {solution.additional_changes.map((change) => {
+                                  const session = getAdditionalChangeSession(change.session_id);
+
+                                  return (
+                                    <div
+                                      key={change.session_id}
+                                      style={{
+                                        marginTop: "10px",
+                                        padding: "12px",
+                                        border: "1px solid #e5e7eb",
+                                        borderRadius: "10px",
+                                      }}
+                                    >
+                                      <strong>
+                                        {getAdditionalChangeSessionLabel(change.session_id)}
+                                      </strong>
+
+                                      {session && (
+                                        <div
+                                          style={{
+                                            marginTop: "4px",
+                                            fontSize: "12px",
+                                            color: "#64748b",
+                                          }}
+                                        >
+                                          {getLecturerName(session.lecturerId)}
+                                        </div>
+                                      )}
+
+                                      {change.time_changed && (
+                                        <div style={{ marginTop: "8px", fontSize: "13px" }}>
+                                          <strong>Time:</strong>{" "}
+                                          {DAY_LABELS[change.old_day.slice(0, 3).toLowerCase()] ?? change.old_day}{" "}
+                                          {change.old_time} →{" "}
+                                          {DAY_LABELS[change.new_day.slice(0, 3).toLowerCase()] ?? change.new_day}{" "}
+                                          {change.new_time}
+                                        </div>
+                                      )}
+
+                                      {change.room_changed && (
+                                        <div style={{ marginTop: "6px", fontSize: "13px" }}>
+                                          <strong>Room:</strong>{" "}
+                                          {getRoomName(change.old_room_id)} →{" "}
+                                          {getRoomName(change.new_room_id)}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              {solution.impact && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPerturbationImpact(solution.impact!)}
+                            style={{
+                              marginTop: "14px",
+                              width: "100%",
+                              padding: "9px 12px",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: "8px",
+                              background: "#ffffff",
+                              cursor: "pointer",
+                              fontWeight: 600,
+                            }}
+                          >
+                            View impacts
+                          </button>
+                        )}
+
+                        <p
+                                style={{
+                                  margin: "14px 0 0",
+                                  fontSize: "12px",
+                                  color: "#64748b",
+                                }}
+                              >
+                                No constraints relaxed. Additional-class lecturers remain unchanged.
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                  {perturbationAlternatives &&
+                    perturbationAlternatives.status !== "feasible" && (
+                      <div
+                        style={{
+                          marginTop: "18px",
+                          padding: "14px 16px",
+                          border: "1px solid #f0b8b8",
+                          borderRadius: "10px",
+                          background: "#fff7f7",
+                        }}
+                      >
+                        {perturbationAlternatives.reason ??
+                          "No perturbation-only rearrangement was found."}
+                      </div>
+                    )}
 
                   {mixedRecoveryOpen && (
+                      <>
+                         <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "flex-end",
+                            marginBottom: "12px",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setMixedRecoveryOpen(false)}
+                            className="find-rearrangements-button"
+                          >
+                            Minimise
+                            <ChevronUp size={16} />
+                          </button>
+                        </div>
+
                       <div
                         style={{
                           marginTop: "14px",
@@ -2400,7 +2477,7 @@ function getAdditionalChangeSessionLabel(
                                 letterSpacing: "0.05em",
                               }}
                             >
-                              Constraints allowed to relax
+                              CONSTRAINTS TO KEEP ENFORCED
                             </div>
 
                             <p
@@ -2409,7 +2486,7 @@ function getAdditionalChangeSessionLabel(
                                 color: "#64748b",
                               }}
                             >
-                              Select constraints the solver may relax if needed.
+                              Select any relaxable constraints that the solver must not relax.
                             </p>
 
                             <div
@@ -2421,7 +2498,7 @@ function getAdditionalChangeSessionLabel(
                               <button
                                 type="button"
                                 onClick={() =>
-                                  setAllowedRelaxationsOpen((open) => !open)
+                                  setProtectedConstraintsOpen((open) => !open)
                                 }
                                 style={{
                                   width: "100%",
@@ -2436,18 +2513,18 @@ function getAdditionalChangeSessionLabel(
                                 }}
                               >
                                 <span>
-                                  {allowedRelaxationIds.length} of{" "}
-                                  {allRelaxableConstraints.length} constraints allowed to relax
+                                  {protectedConstraintIds.length} of{" "}
+                                  {allRelaxableConstraints.length} constraints protected
                                 </span>
 
-                                {allowedRelaxationsOpen ? (
+                                {protectedConstraintsOpen ? (
                                   <ChevronUp size={16} />
                                 ) : (
                                   <ChevronDown size={16} />
                                 )}
                               </button>
 
-                              {allowedRelaxationsOpen && (
+                              {protectedConstraintsOpen && (
                                 <div
                                   style={{
                                     marginTop: "6px",
@@ -2461,7 +2538,7 @@ function getAdditionalChangeSessionLabel(
                                 >
                                   {allRelaxableConstraints.map((constraint) => {
                                     const checked =
-                                      allowedRelaxationIds.includes(
+                                      protectedConstraintIds.includes(
                                         constraint.instance_id,
                                       );
 
@@ -2480,7 +2557,7 @@ function getAdditionalChangeSessionLabel(
                                           type="checkbox"
                                           checked={checked}
                                           onChange={() => {
-                                            setAllowedRelaxationIds((current) =>
+                                            setProtectedConstraintIds((current) =>
                                               checked
                                                 ? current.filter(
                                                     (id) =>
@@ -2524,7 +2601,7 @@ function getAdditionalChangeSessionLabel(
                             </div>
                           </div>
 
-                          {/* RIGHT — RELAXATIONS PERMITTED */}
+                          {/* RIGHT — PROTECTED CONSTRAINTS */}
                           <div
                             style={{
                               padding: "16px",
@@ -2542,7 +2619,7 @@ function getAdditionalChangeSessionLabel(
                                 letterSpacing: "0.05em",
                               }}
                             >
-                              Relaxations permitted
+                              Constraints protected
                             </div>
 
                             <div
@@ -2552,18 +2629,18 @@ function getAdditionalChangeSessionLabel(
                                 fontWeight: 600,
                               }}
                             >
-                              {selectedAllowedRelaxations.length} selected
+                              {selectedProtectedConstraints.length} selected
                             </div>
 
-                            {selectedAllowedRelaxations.length === 0 ? (
+                            {selectedProtectedConstraints.length === 0 ? (
                               <p
                                 style={{
                                   margin: "8px 0 0",
                                   color: "#64748b",
                                 }}
                               >
-                                No constraint relaxations are currently permitted.
-                                All constraints will remain enforced.
+                                No constraints are protected. The solver may relax any
+                                relaxable constraint if needed.
                               </p>
                             ) : (
                               <>
@@ -2573,15 +2650,14 @@ function getAdditionalChangeSessionLabel(
                                     color: "#64748b",
                                   }}
                                 >
-                                  The solver may relax the following constraints if
-                                  needed to find a solution. All other constraints
-                                  will remain enforced.
+                                  The following constraints must remain enforced. Other
+                                  relaxable constraints may be relaxed if needed.
                                 </p>
 
                                 <div style={{ marginTop: "12px" }}>
-                                  {selectedAllowedRelaxations.map((constraint) => (
+                                  {selectedProtectedConstraints.map((constraint) => (
                                     <div
-                                      key={`permitted-${constraint.instance_id}`}
+                                      key={`protected-${constraint.instance_id}`}
                                       style={{
                                         padding: "10px 0",
                                         borderTop: "1px solid #f3d69a",
@@ -2620,9 +2696,8 @@ function getAdditionalChangeSessionLabel(
                                     color: "#78350f",
                                   }}
                                 >
-                                  Selecting a constraint does not mean it will
-                                  definitely be relaxed. It only gives the solver
-                                  permission to relax it if needed.
+                                  Protected constraints will remain enforced. Constraints
+                                  you do not select may be relaxed if needed.
                                 </div>
                               </>
                             )}
@@ -2921,8 +2996,9 @@ function getAdditionalChangeSessionLabel(
                               </p>
                             </div>
                           )}
-                        </div>
-                    )}
+                            </div>
+                          </>
+                        )}
                   <div
                     style={{
                       marginTop: "16px",
@@ -2943,6 +3019,30 @@ function getAdditionalChangeSessionLabel(
             </section>
           </div>
         )}
+
+      {selectedPerturbationImpact && (
+        <PerturbationImpactModal
+          impact={selectedPerturbationImpact}
+          sessions={sessions}
+          modules={modules}
+          cohorts={cohorts}
+          lecturers={lecturers}
+          rooms={rooms}
+          onClose={() => setSelectedPerturbationImpact(null)}
+        />
+      )}
+
+     {showImpactComparison && (
+      <PerturbationImpactComparisonModal
+                  solutions={perturbationAlternatives.solutions}
+                  sessions={sessions}
+                  modules={modules}
+                  cohorts={cohorts}
+                  lecturers={lecturers}
+                  rooms={rooms}
+                  onClose={() => setShowImpactComparison(false)}
+                />
+      )}
     </>
   );
 }

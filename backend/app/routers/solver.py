@@ -9,7 +9,9 @@ from app.solver.reschedule import (
     get_proposed_values,
     diagnose_specific_request, get_session,
 )
-
+from app.solver.perturbation_alternatives import (
+    find_perturbation_alternatives,
+)
 from app.schemas import (RescheduleRequestIn, MixedRecoveryRequestIn)
 from app.solver.mixed_recovery import (solve_reschedule_mixed_recovery,)
 
@@ -129,10 +131,19 @@ def reschedule_min_perturbation(request: RescheduleRequestIn, db: Session = Depe
 
 
 @router.post("/reschedule/mixed")
-def reschedule_mixed(payload: MixedRecoveryRequestIn, db: Session = Depends(get_db)):
+def reschedule_mixed(payload: MixedRecoveryRequestIn, db: Session = Depends(get_db),):
     return solve_reschedule_mixed_recovery(
         request=payload.request,
         max_perturbations=payload.max_perturbations,
-        allowed_relaxations=payload.allowed_relaxations,
+        protected_constraints=payload.protected_constraints,
         db=db,
+    )
+
+
+@router.post("/reschedule/perturbation-alternatives")
+def reschedule_perturbation_alternatives(request: RescheduleRequestIn, db: Session = Depends(get_db),):
+    return find_perturbation_alternatives(
+        request=request,
+        db=db,
+        max_solutions=3,
     )

@@ -1,19 +1,3 @@
-"""
-Mixed recovery solver.
-
-Semantics:
-- The requested target change is forced.
-- Other sessions may move in time/room, but their lecturer is frozen.
-- At most `max_perturbations` other sessions may be touched.
-- Unbreakable constraints are always enforced.
-- Breakable constraints are baseline-aware unless the user explicitly
-  permits that exact constraint instance to be relaxed.
-- The objective minimizes the number of other sessions touched.
-
-This file intentionally duplicates some minimum-perturbation logic so
-mixed recovery is self-contained and easy to evolve independently.
-"""
-
 from ortools.sat.python import cp_model
 
 from app.schemas import ChangeMode, RescheduleRequestIn
@@ -57,7 +41,7 @@ from app.solver.reschedule import (
 
 
 # =====================================================================
-# Allowed-relaxation helpers
+# Protected-constraint helpers
 # =====================================================================
 
 def _value(item, name, default=None):
@@ -83,24 +67,16 @@ def _days_match(left, right):
     return left_key == right_key
 
 
-def is_relaxation_allowed(
-    allowed_relaxations,
+def is_constraint_protected(
+    protected_constraints,
     *,
     constraint_id,
     instance_type,
     instance_id,
     day=None,
 ):
-    """
-    True only when the user explicitly permitted this exact instance.
-
-    IMPORTANT:
-    `instance_id` here is the stakeholder/entity id used by the solver:
-      - session id for class capacity/equipment
-      - cohort id for cohort daily hours
-      - lecturer id for lecturer daily hours/lunch
-    """
-    for item in allowed_relaxations or []:
+    """True when this exact relaxable constraint instance must stay enforced."""
+    for item in protected_constraints or []:
         if _value(item, "constraint_id") != constraint_id:
             continue
         if _value(item, "instance_type") != instance_type:
@@ -110,12 +86,11 @@ def is_relaxation_allowed(
         if not _days_match(_value(item, "day"), day):
             continue
         return True
-
     return False
 
 
-def apply_allowed_relaxations(
-    allowed_relaxations,
+def apply_protected_constraints(
+    protected_constraints,
     *,
     active_capacity_sessions,
     active_equipment_sessions,
@@ -124,17 +99,14 @@ def apply_allowed_relaxations(
     lecturer_lunch_constraints,
 ):
     """
-    Remove ONLY the constraint instances the user has permitted.
-
-    Removing an instance means the mixed CP-SAT model does not enforce
-    that instance. It does not mean the final solution must violate it.
+    Keep only explicitly protected relaxable instances in the CP-SAT model.
+    Unprotected relaxable instances may therefore be violated if necessary.
     """
-
     active_capacity_sessions = {
         session_id
         for session_id in active_capacity_sessions
-        if not is_relaxation_allowed(
-            allowed_relaxations,
+        if is_constraint_protected(
+            protected_constraints,
             constraint_id="class-capacity",
             instance_type="session",
             instance_id=session_id,
@@ -145,8 +117,8 @@ def apply_allowed_relaxations(
     active_equipment_sessions = {
         session_id
         for session_id in active_equipment_sessions
-        if not is_relaxation_allowed(
-            allowed_relaxations,
+        if is_constraint_protected(
+            protected_constraints,
             constraint_id="class-equipment",
             instance_type="session",
             instance_id=session_id,
@@ -157,8 +129,8 @@ def apply_allowed_relaxations(
     cohort_daily_constraints = [
         constraint
         for constraint in cohort_daily_constraints
-        if not is_relaxation_allowed(
-            allowed_relaxations,
+        if is_constraint_protected(
+            protected_constraints,
             constraint_id=constraint.constraint_id,
             instance_type="cohort",
             instance_id=constraint.cohort_id,
@@ -169,8 +141,8 @@ def apply_allowed_relaxations(
     lecturer_daily_constraints = [
         constraint
         for constraint in lecturer_daily_constraints
-        if not is_relaxation_allowed(
-            allowed_relaxations,
+        if is_constraint_protected(
+            protected_constraints,
             constraint_id=constraint.constraint_id,
             instance_type="lecturer",
             instance_id=constraint.lecturer_id,
@@ -181,8 +153,8 @@ def apply_allowed_relaxations(
     lecturer_lunch_constraints = [
         constraint
         for constraint in lecturer_lunch_constraints
-        if not is_relaxation_allowed(
-            allowed_relaxations,
+        if is_constraint_protected(
+            protected_constraints,
             constraint_id=constraint.constraint_id,
             instance_type="lecturer",
             instance_id=constraint.lecturer_id,
@@ -425,9 +397,9 @@ def build_mixed_recovery_solver_model(
     # -----------------------------------------------------------------
     # BREAKABLE constraints.
     #
-    # The collections passed here have already had user-permitted
-    # relaxation instances removed. Everything remaining is enforced
-    # with the same baseline-aware semantics as perturbation-only.
+    # The collections passed here contain only user-protected relaxable
+    # instances. Those remain enforced with baseline-aware semantics.
+    # Unprotected relaxable instances are omitted and may be violated.
     # -----------------------------------------------------------------
     add_baseline_aware_class_capacity_constraint(
         model,
@@ -502,13 +474,13 @@ def build_mixed_recovery_solver_model(
 def solve_reschedule_mixed_recovery(
     request: RescheduleRequestIn,
     max_perturbations: int,
-    allowed_relaxations,
+    protected_constraints,
     db,
 ):
     """
     Solve a mixed recovery request.
 
-    `allowed_relaxations` should contain objects/dicts shaped like:
+    `protected_constraints` should contain objects/dicts shaped like:
 
         {
             "constraint_id": "lecturer-lunch-break",
@@ -573,38 +545,28 @@ def solve_reschedule_mixed_recovery(
     lecturers = get_lecturers(db)
     unavailability_rows = get_all_lecturer_unavailability(db)
 
-    active_capacity_sessions = (
-        get_active_class_capacity_sessions(db)
-    )
-    active_equipment_sessions = (
-        get_active_class_equipment_sessions(db)
-    )
-    cohort_daily_constraints = (
-        get_active_cohort_daily_hour_constraints(db)
-    )
-    lecturer_daily_constraints = (
-        get_active_lecturer_daily_hour_constraints(db)
-    )
-    lecturer_lunch_constraints = (
-        get_active_lecturer_lunch_constraints(db)
-    )
+    all_capacity_sessions = get_active_class_capacity_sessions(db)
+    all_equipment_sessions = get_active_class_equipment_sessions(db)
+    all_cohort_daily_constraints = get_active_cohort_daily_hour_constraints(db)
+    all_lecturer_daily_constraints = get_active_lecturer_daily_hour_constraints(db)
+    all_lecturer_lunch_constraints = get_active_lecturer_lunch_constraints(db)
 
     # -----------------------------------------------------------------
-    # 5. Remove only user-permitted relaxation instances.
+    # 5. Enforce only relaxable instances explicitly protected by user.
     # -----------------------------------------------------------------
     (
-        active_capacity_sessions,
-        active_equipment_sessions,
-        cohort_daily_constraints,
-        lecturer_daily_constraints,
-        lecturer_lunch_constraints,
-    ) = apply_allowed_relaxations(
-        allowed_relaxations,
-        active_capacity_sessions=active_capacity_sessions,
-        active_equipment_sessions=active_equipment_sessions,
-        cohort_daily_constraints=cohort_daily_constraints,
-        lecturer_daily_constraints=lecturer_daily_constraints,
-        lecturer_lunch_constraints=lecturer_lunch_constraints,
+        enforced_capacity_sessions,
+        enforced_equipment_sessions,
+        enforced_cohort_daily_constraints,
+        enforced_lecturer_daily_constraints,
+        enforced_lecturer_lunch_constraints,
+    ) = apply_protected_constraints(
+        protected_constraints,
+        active_capacity_sessions=all_capacity_sessions,
+        active_equipment_sessions=all_equipment_sessions,
+        cohort_daily_constraints=all_cohort_daily_constraints,
+        lecturer_daily_constraints=all_lecturer_daily_constraints,
+        lecturer_lunch_constraints=all_lecturer_lunch_constraints,
     )
 
     # -----------------------------------------------------------------
@@ -626,11 +588,11 @@ def solve_reschedule_mixed_recovery(
         rooms=rooms,
         lecturers=lecturers,
         unavailability_rows=unavailability_rows,
-        active_capacity_sessions=active_capacity_sessions,
-        active_equipment_sessions=active_equipment_sessions,
-        cohort_daily_constraints=cohort_daily_constraints,
-        lecturer_daily_constraints=lecturer_daily_constraints,
-        lecturer_lunch_constraints=lecturer_lunch_constraints,
+        active_capacity_sessions=enforced_capacity_sessions,
+        active_equipment_sessions=enforced_equipment_sessions,
+        cohort_daily_constraints=enforced_cohort_daily_constraints,
+        lecturer_daily_constraints=enforced_lecturer_daily_constraints,
+        lecturer_lunch_constraints=enforced_lecturer_lunch_constraints,
         baseline_context=baseline_context,
         max_perturbations=max_perturbations,
     )
@@ -649,14 +611,14 @@ def solve_reschedule_mixed_recovery(
             "status": "infeasible",
             "reason": (
                 "No feasible mixed-recovery solution exists within "
-                "the selected perturbation limit and permitted "
-                "constraint relaxations."
+                "the selected perturbation limit while keeping the "
+                "selected protected constraints enforced."
             ),
             "diagnostics": None,
             "max_perturbations": max_perturbations,
-            "allowed_relaxations": [
-                _relaxation_to_dict(item)
-                for item in (allowed_relaxations or [])
+            "protected_constraints": [
+                _constraint_to_dict(item)
+                for item in (protected_constraints or [])
             ],
         }
 
@@ -731,7 +693,7 @@ def solve_reschedule_mixed_recovery(
         })
 
     # -----------------------------------------------------------------
-    # 10. Work out which permitted relaxations were actually used.
+    # 10. Work out which unprotected relaxations were actually used.
     # -----------------------------------------------------------------
     used_relaxations = get_used_relaxations(
         solver=solver,
@@ -740,7 +702,12 @@ def solve_reschedule_mixed_recovery(
         start_vars=start_vars,
         room_vars=room_vars,
         index_to_room_id=index_to_room_id,
-        allowed_relaxations=allowed_relaxations,
+        protected_constraints=protected_constraints,
+        all_capacity_sessions=all_capacity_sessions,
+        all_equipment_sessions=all_equipment_sessions,
+        all_cohort_daily_constraints=all_cohort_daily_constraints,
+        all_lecturer_daily_constraints=all_lecturer_daily_constraints,
+        all_lecturer_lunch_constraints=all_lecturer_lunch_constraints,
         baseline_context=baseline_context,
     )
 
@@ -769,9 +736,9 @@ def solve_reschedule_mixed_recovery(
             additional_changes
         ),
         "max_perturbations": max_perturbations,
-        "allowed_relaxations": [
-            _relaxation_to_dict(item)
-            for item in (allowed_relaxations or [])
+        "protected_constraints": [
+            _constraint_to_dict(item)
+            for item in (protected_constraints or [])
         ],
         "used_relaxations": used_relaxations,
         "relaxation_count": len(used_relaxations),
@@ -787,17 +754,18 @@ def get_used_relaxations(
     start_vars,
     room_vars,
     index_to_room_id,
-    allowed_relaxations,
+    protected_constraints,
+    all_capacity_sessions,
+    all_equipment_sessions,
+    all_cohort_daily_constraints,
+    all_lecturer_daily_constraints,
+    all_lecturer_lunch_constraints,
     baseline_context,
 ):
     """
-    Return only permitted relaxations that the final solution actually uses.
-
-    Existing grandfathered violations do NOT count as newly used relaxations.
+    Return unprotected relaxable instances actually violated by the solution.
+    Existing grandfathered violations do not count as newly used relaxations.
     """
-    if not allowed_relaxations:
-        return []
-
     rooms_by_id = {room.id: room for room in rooms}
     sessions_by_id = {session.id: session for session in all_sessions}
     baseline_keys = baseline_context["keys"]
@@ -813,56 +781,86 @@ def get_used_relaxations(
         for session in all_sessions
     }
 
+    candidates = []
+
+    for session_id in all_capacity_sessions:
+        candidates.append({
+            "constraint_id": "class-capacity",
+            "instance_type": "session",
+            "instance_id": session_id,
+            "day": None,
+        })
+
+    for session_id in all_equipment_sessions:
+        candidates.append({
+            "constraint_id": "class-equipment",
+            "instance_type": "session",
+            "instance_id": session_id,
+            "day": None,
+        })
+
+    for constraint in all_cohort_daily_constraints:
+        candidates.append({
+            "constraint_id": constraint.constraint_id,
+            "instance_type": "cohort",
+            "instance_id": constraint.cohort_id,
+            "day": constraint.day,
+        })
+
+    for constraint in all_lecturer_daily_constraints:
+        candidates.append({
+            "constraint_id": constraint.constraint_id,
+            "instance_type": "lecturer",
+            "instance_id": constraint.lecturer_id,
+            "day": constraint.day,
+        })
+
+    for constraint in all_lecturer_lunch_constraints:
+        candidates.append({
+            "constraint_id": constraint.constraint_id,
+            "instance_type": "lecturer",
+            "instance_id": constraint.lecturer_id,
+            "day": constraint.day,
+        })
+
     used = []
 
-    for item in allowed_relaxations:
-        relaxation = _relaxation_to_dict(item)
+    for relaxation in candidates:
         constraint_id = relaxation["constraint_id"]
         instance_type = relaxation["instance_type"]
         instance_id = relaxation["instance_id"]
         day = relaxation["day"]
 
+        if is_constraint_protected(
+            protected_constraints,
+            constraint_id=constraint_id,
+            instance_type=instance_type,
+            instance_id=instance_id,
+            day=day,
+        ):
+            continue
+
         actually_used = False
 
-        # -------------------------------------------------------------
-        # Session capacity
-        # -------------------------------------------------------------
-        if (
-            constraint_id == "class-capacity"
-            and instance_type == "session"
-        ):
+        if constraint_id == "class-capacity" and instance_type == "session":
             session = sessions_by_id.get(instance_id)
-
             if session is not None:
                 room_id = solved_room_id[session.id]
                 room = rooms_by_id.get(room_id)
                 required_capacity = session.module.required_capacity
-
                 if (
                     room is not None
                     and required_capacity is not None
                     and room.capacity < required_capacity
                 ):
-                    baseline_key = (
-                        "class_capacity",
-                        session.id,
-                        room_id,
-                    )
+                    baseline_key = ("class_capacity", session.id, room_id)
                     actually_used = baseline_key not in baseline_keys
 
-        # -------------------------------------------------------------
-        # Session equipment
-        # -------------------------------------------------------------
-        elif (
-            constraint_id == "class-equipment"
-            and instance_type == "session"
-        ):
+        elif constraint_id == "class-equipment" and instance_type == "session":
             session = sessions_by_id.get(instance_id)
-
             if session is not None and session.module.required_equipment:
                 room_id = solved_room_id[session.id]
                 room = rooms_by_id.get(room_id)
-
                 if room is not None:
                     required = {
                         value.strip().lower()
@@ -874,18 +872,10 @@ def get_used_relaxations(
                         for value in (room.equipment or "").split(",")
                         if value.strip()
                     }
-
                     if required - available:
-                        baseline_key = (
-                            "class_equipment",
-                            session.id,
-                            room_id,
-                        )
+                        baseline_key = ("class_equipment", session.id, room_id)
                         actually_used = baseline_key not in baseline_keys
 
-        # -------------------------------------------------------------
-        # Cohort daily hours
-        # -------------------------------------------------------------
         elif (
             constraint_id == "cohort-max-teaching-hours-per-day"
             and instance_type == "cohort"
@@ -893,28 +883,20 @@ def get_used_relaxations(
         ):
             day_key = day.lower()
             day_index = DAY_TO_INDEX[day_key]
-
             total_hours = sum(
                 get_duration_slots(session)
                 for session in all_sessions
                 if (
-                    any(
-                        cohort.id == instance_id
-                        for cohort in session.cohorts
-                    )
+                    any(cohort.id == instance_id for cohort in session.cohorts)
                     and solved_start[session.id] // SLOTS_PER_DAY == day_index
                 )
             )
-
             allowed_limit = cohort_baseline_limits.get(
                 (instance_id, day_key),
                 COHORT_MAX_HOURS_PER_DAY,
             )
             actually_used = total_hours > allowed_limit
 
-        # -------------------------------------------------------------
-        # Lecturer daily hours
-        # -------------------------------------------------------------
         elif (
             constraint_id == "lecturer-max-one-hour-per-day"
             and instance_type == "lecturer"
@@ -922,7 +904,6 @@ def get_used_relaxations(
         ):
             day_key = day.lower()
             day_index = DAY_TO_INDEX[day_key]
-
             total_hours = sum(
                 get_duration_slots(session)
                 for session in all_sessions
@@ -931,47 +912,33 @@ def get_used_relaxations(
                     and solved_start[session.id] // SLOTS_PER_DAY == day_index
                 )
             )
-
             allowed_limit = lecturer_baseline_limits.get(
                 (instance_id, day_key),
                 LECTURER_MAX_HOURS_PER_DAY,
             )
             actually_used = total_hours > allowed_limit
 
-        # -------------------------------------------------------------
-        # Lecturer lunch break
-        # -------------------------------------------------------------
         elif (
             constraint_id == "lecturer-lunch-break"
             and instance_type == "lecturer"
             and day is not None
         ):
             day_key = day.lower()
-            baseline_key = (
-                "lecturer_lunch_break",
-                instance_id,
-                day_key,
-            )
+            baseline_key = ("lecturer_lunch_break", instance_id, day_key)
 
-            # If this lecturer/day was already grandfathered, the mixed
-            # solve did not need the newly permitted relaxation.
             if baseline_key not in baseline_keys:
                 lunch_12_start = day_time_to_slot(day_key, "12:00")
                 lunch_13_start = day_time_to_slot(day_key, "13:00")
-
                 blocks_12 = False
                 blocks_13 = False
 
                 for session in all_sessions:
                     if session.lecturer_id != instance_id:
                         continue
-
                     start = solved_start[session.id]
                     end = start + get_duration_slots(session)
-
                     if start < lunch_12_start + 1 and lunch_12_start < end:
                         blocks_12 = True
-
                     if start < lunch_13_start + 1 and lunch_13_start < end:
                         blocks_13 = True
 
@@ -983,12 +950,10 @@ def get_used_relaxations(
     return used
 
 
-
-def _relaxation_to_dict(item):
+def _constraint_to_dict(item):
     return {
         "constraint_id": _value(item, "constraint_id"),
         "instance_type": _value(item, "instance_type"),
         "instance_id": _value(item, "instance_id"),
         "day": _value(item, "day"),
     }
-

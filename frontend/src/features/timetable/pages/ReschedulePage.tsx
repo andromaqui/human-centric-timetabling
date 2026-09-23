@@ -188,6 +188,12 @@ type RescheduleRequest = {
   requested_lecturer_id: string | null;
   temporarily_deactivated_constraints?: TemporaryConstraintDeactivation[];
   max_additional_changes?: number | null;
+  objective_weights: {
+    lecturer_idle: number;
+    cohort_gaps: number;
+    cohort_room_changes: number;
+    room_waste: number;
+  };
 };
 
 type RescheduleSolution = {
@@ -224,6 +230,31 @@ type AdditionalChange = {
   new_room_id: string;
 };
 
+type PerturbationAlternative = {
+  rank: number;
+  objective_score: number | null;
+
+  session_id: string;
+  start_slot: number;
+  day: string;
+  time: string;
+  room_id: string;
+  lecturer_id: string;
+
+  perturbation_count: number;
+  additional_changes: AdditionalChange[];
+
+  proven_optimal_for_remaining_model?: boolean;
+};
+
+type PerturbationAlternativesResponse = {
+  status: "feasible" | "infeasible" | "invalid";
+  reason: string | null;
+  minimum_perturbations: number | null;
+  solution_count?: number;
+  solutions: PerturbationAlternative[];
+};
+
 type RecoveryOptions = {
   can_perturb: boolean;
   minimum_perturbations: number | null;
@@ -241,6 +272,7 @@ type RescheduleResponse =
       room_id?: string;
       lecturer_id?: string;
       additional_changes?: AdditionalChange[];
+      objective_score?: number | null;
     }
   | {
       status: "infeasible" | "invalid" | "success";
@@ -252,22 +284,8 @@ type RescheduleResponse =
 
 const initialObjectives: Objective[] = [
   {
-    id: "lecturer-pref",
-    label: "Minimize lecturer preference violations",
-    stakeholder: "Lecturer",
-    weight: 50,
-    enabled: true,
-  },
-  {
     id: "lecturer-idle",
     label: "Minimize lecturer idle time",
-    stakeholder: "Lecturer",
-    weight: 50,
-    enabled: true,
-  },
-  {
-    id: "lecturer-balance",
-    label: "Balance lecturer workload",
     stakeholder: "Lecturer",
     weight: 50,
     enabled: true,
@@ -280,23 +298,9 @@ const initialObjectives: Objective[] = [
     enabled: true,
   },
   {
-    id: "cohort-balance",
-    label: "Balance cohort daily workload",
-    stakeholder: "Cohort",
-    weight: 50,
-    enabled: true,
-  },
-  {
     id: "room-changes",
     label: "Minimize back-to-back room changes",
-    stakeholder: "Room",
-    weight: 50,
-    enabled: true,
-  },
-  {
-    id: "room-util",
-    label: "Maximize room utilization",
-    stakeholder: "Room",
+    stakeholder: "Cohort",
     weight: 50,
     enabled: true,
   },
@@ -304,20 +308,6 @@ const initialObjectives: Objective[] = [
     id: "room-waste",
     label: "Minimize room capacity waste",
     stakeholder: "Room",
-    weight: 50,
-    enabled: true,
-  },
-  {
-    id: "num-changes",
-    label: "Minimize the number of timetable changes",
-    stakeholder: "General",
-    weight: 50,
-    enabled: true,
-  },
-  {
-    id: "soft-violations",
-    label: "Minimize soft constraint violations",
-    stakeholder: "General",
     weight: 50,
     enabled: true,
   },
@@ -417,14 +407,16 @@ export function ReschedulePage() {
 
   type ChangeType = "time" | "room" | "lecturer" | "both" | null;
   type TimeKnowledge = "known" | "find" | null;
+  type RoomKnowledge = "known" | "find" | null;
   type RescheduleScope = "only" | "up-to-2" | "up-to-3" | null;
 
   const [changeType, setChangeType] = useState<ChangeType>(null);
   const [timeKnowledge, setTimeKnowledge] = useState<TimeKnowledge>(null);
+  const [roomKnowledge, setRoomKnowledge] = useState<RoomKnowledge>(null);
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const [rescheduleScope, setRescheduleScope] = useState<RescheduleScope>(null);
   const [solverResult, setSolverResult] = useState<RescheduleResponse | null>(null);
-  const [perturbationPreview, setPerturbationPreview] = useState<RescheduleResponse | null>(null);
+  const [perturbationAlternatives, setPerturbationAlternatives] = useState<PerturbationAlternativesResponse | null>(null);
   const [solverLoading, setSolverLoading] = useState(false);
   const [solverError, setSolverError] = useState<string | null>(null);
 
@@ -469,6 +461,11 @@ export function ReschedulePage() {
     ) ||
     (
       (changeType === "room" || changeType === "both") &&
+      !roomKnowledge
+    ) ||
+    (
+      (changeType === "room" || changeType === "both") &&
+      roomKnowledge === "known" &&
       !selectedRoom
     ) ||
     (
@@ -500,7 +497,12 @@ export function ReschedulePage() {
     }
 
     if (changeType === "room" || changeType === "both") {
-      room = selectedRoom ? "specific" : "find";
+      room =
+        roomKnowledge === "known"
+          ? "specific"
+          : roomKnowledge === "find"
+            ? "find"
+            : "keep";
     }
 
     if (changeType === "lecturer") {
@@ -509,7 +511,7 @@ export function ReschedulePage() {
     }
 
     return { time, room, lecturer };
-  }, [changeType, timeKnowledge, selectedRoom, lecturerKnowledge]);
+  }, [changeType, timeKnowledge, roomKnowledge, lecturerKnowledge]);
 
   // Objectives matter whenever the solver has alternatives to compare:
   // either a requested dimension is left as FIND, or the user allows
@@ -1339,6 +1341,20 @@ export function ReschedulePage() {
     );
   }
 
+  function buildObjectiveWeights(): RescheduleRequest["objective_weights"] {
+    const getWeight = (id: string) => {
+      const objective = objectives.find((item) => item.id === id);
+      return objective?.enabled ? objective.weight : 0;
+    };
+
+    return {
+      lecturer_idle: getWeight("lecturer-idle"),
+      cohort_gaps: getWeight("cohort-gaps"),
+      cohort_room_changes: getWeight("room-changes"),
+      room_waste: getWeight("room-waste"),
+    };
+  }
+
   function buildRescheduleRequest(): RescheduleRequest {
     const timeMode = currentModes.time;
     const roomMode = currentModes.room;
@@ -1365,6 +1381,7 @@ export function ReschedulePage() {
       requested_room_id: requestedRoomId,
       lecturer_mode: lecturerMode,
       requested_lecturer_id: requestedLecturerId,
+      objective_weights: buildObjectiveWeights(),
       max_additional_changes:
         rescheduleScope === "up-to-2"
           ? 2
@@ -1379,6 +1396,7 @@ export function ReschedulePage() {
     setSolverError(null);
     setAppliedTemporaryDeactivations([]);
     setSolverResult(null);
+    setPerturbationAlternatives(null);
     setDiagResult(null);
     setDiagError(null);
 
@@ -1478,6 +1496,7 @@ export function ReschedulePage() {
           requested_room_id: roomId,
           lecturer_mode: "specific",
           requested_lecturer_id: lecturerId,
+          objective_weights: buildObjectiveWeights(),
           temporarily_deactivated_constraints:
             temporarilyDeactivatedConstraints,
         };
@@ -1618,6 +1637,7 @@ async function runRescheduleWithAdditionalChanges() {
         requested_room_id: roomId,
         lecturer_mode: "specific",
         requested_lecturer_id: lecturerId,
+        objective_weights: buildObjectiveWeights(),
         max_additional_changes: null,
       };
     } else {
@@ -1635,8 +1655,8 @@ async function runRescheduleWithAdditionalChanges() {
       request,
     );
 
-    const result = await api.post<RescheduleResponse>(
-      "/solver/reschedule/min-perturbation",
+    const result = await api.post<PerturbationAlternativesResponse>(
+      "/solver/reschedule/perturbation-alternatives",
       request,
     );
 
@@ -1645,10 +1665,12 @@ async function runRescheduleWithAdditionalChanges() {
       result,
     );
 
-    if (result.status === "feasible") {
-      setPerturbationPreview(result);
-    } else {
-      setSolverResult(result);
+    setPerturbationAlternatives(result);
+
+    if (result.status !== "feasible") {
+      setSolverError(
+        result.reason ?? "No perturbation recovery could be found.",
+      );
     }
     setDiagResult(null);
     setDiagError(null);
@@ -2423,19 +2445,46 @@ async function runRescheduleWithAdditionalChanges() {
 
               {(changeType === "room" || changeType === "both") && (
                 <div className="impact-group change-section">
-                  <div className="impact-label">Which room?</div>
+                  <div className="impact-label">Do you know the new room?</div>
 
                   <div className="request-options">
-                    {availableRooms.map((room) => (
-                      <button
-                        key={room}
-                        className={selectedRoom === room ? "active" : ""}
-                        onClick={() => setSelectedRoom(room)}
-                      >
-                        {room}
-                      </button>
-                    ))}
+                    <button
+                      className={roomKnowledge === "known" ? "active" : ""}
+                      onClick={() => setRoomKnowledge("known")}
+                    >
+                      I know the room
+                    </button>
+
+                    <button
+                      className={roomKnowledge === "find" ? "active" : ""}
+                      onClick={() => {
+                        setRoomKnowledge("find");
+                        setSelectedRoom(null);
+                      }}
+                    >
+                      Find a new room
+                    </button>
                   </div>
+
+                  {roomKnowledge === "known" && (
+                    <>
+                      <div className="impact-label" style={{ marginTop: "12px" }}>
+                        Which room?
+                      </div>
+
+                      <div className="request-options">
+                        {availableRooms.map((room) => (
+                          <button
+                            key={room}
+                            className={selectedRoom === room ? "active" : ""}
+                            onClick={() => setSelectedRoom(room)}
+                          >
+                            {room}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -2488,9 +2537,11 @@ async function runRescheduleWithAdditionalChanges() {
 
                           <div className="impact-chips">
                             <span className="impact-chip">
-                              {selectedRoom ??
-                                selectedEvent!.session.room ??
-                                "Room TBC"}
+                              {roomKnowledge === "find"
+                                ? "Any suitable new room"
+                                : selectedRoom ??
+                                  selectedEvent!.session.room ??
+                                  "Room TBC"}
                             </span>
                           </div>
                         </div>
@@ -2643,7 +2694,7 @@ async function runRescheduleWithAdditionalChanges() {
               selectedEventRoom={selectedEvent?.session.room}
               selectedEventLecturerName={selectedEvent?.lecturer?.name}
               originalModes={originalModes}
-              perturbationPreview={perturbationPreview}
+              perturbationAlternatives={perturbationAlternatives}
               mixedRecoveryRequest={buildRescheduleRequest()}
               requestedTimeLabel={
                           originalModes?.time === "find"
