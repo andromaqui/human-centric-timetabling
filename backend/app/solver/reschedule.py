@@ -1714,40 +1714,15 @@ def solve_reschedule(request: RescheduleRequestIn, db):
 
             print("===============================================\n")
 
-            # ------------------------------------------------------
-            # Test perturbation-only recovery.
-            #
-            # The dedicated minimum-perturbation solver determines
-            # whether the concrete requested placement can be made
-            # feasible by moving other timetable sessions.
-            # ------------------------------------------------------
-
-            perturbation_result = solve_reschedule_min_perturbation(
-                request,
-                db,
-            )
-
-            can_perturb = (
-                perturbation_result.get("status")
-                == "feasible"
-            )
-
-            minimum_perturbations = None
-
-            if can_perturb:
-                minimum_perturbations = perturbation_result.get(
-                    "perturbation_count"
-                )
-
             return {
                 "status": "infeasible",
                 "reason": "No feasible solution found",
                 "diagnostics": diagnostics,
                 "recovery_options": {
-                    "can_perturb": can_perturb,
-                    "minimum_perturbations": (
-                        minimum_perturbations
-                    ),
+                    # Perturbation recovery is calculated separately
+                    # after Step 4 has loaded.
+                    "can_perturb": None,
+                    "minimum_perturbations": None,
                 },
             }
 

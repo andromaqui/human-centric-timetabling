@@ -29,6 +29,25 @@ def reschedule(request: RescheduleRequestIn, db: Session = Depends(get_db)):
     return solve_reschedule(request, db)
 
 
+@router.post("/reschedule/minimum-perturbations")
+def minimum_perturbations(
+    request: RescheduleRequestIn,
+    db: Session = Depends(get_db),
+):
+    result = solve_reschedule_min_perturbation(request, db)
+
+    if result.get("status") == "feasible":
+        return {
+            "can_perturb": True,
+            "minimum_perturbations": result.get("perturbation_count"),
+        }
+
+    return {
+        "can_perturb": False,
+        "minimum_perturbations": None,
+    }
+
+
 @router.post("/reschedule/preview-conflicts")
 def preview_reschedule_conflicts(
     request: RescheduleRequestIn,

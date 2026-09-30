@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import {
   ArrowRight,
   CalendarRange,
@@ -107,7 +107,7 @@ type PerturbationAlternativesResponse = {
 };
 
 type RecoveryOptions = {
-  can_perturb: boolean;
+  can_perturb: boolean | null;
   minimum_perturbations: number | null;
 };
 
@@ -324,6 +324,7 @@ const DAY_LABELS: Record<string, string> = {
 
 type Step4SolutionProps = {
   solverLoading: boolean;
+  minimumPerturbationLoading: boolean;
   solverError: string | null;
   solverResult: RescheduleResponse | null;
   perturbationAlternatives: PerturbationAlternativesResponse | null;
@@ -411,6 +412,7 @@ type Step4SolutionProps = {
 
 export function Step4Solution({
   solverLoading,
+  minimumPerturbationLoading,
   solverError,
   solverResult,
   perturbationAlternatives,
@@ -488,6 +490,7 @@ export function Step4Solution({
 
   const [mixedRecoveryOpen, setMixedRecoveryOpen] = useState(false);
   const [rearrangementsLoading, setRearrangementsLoading] = useState(false);
+  const autoRearrangementsStartedRef = useRef(false);
   const [mixedPerturbationLimit, setMixedPerturbationLimit] = useState(0);
   const [mixedGuidance, setMixedGuidance] = useState<MixedRecoveryGuidance | null>(null);
   const [mixedGuidanceLoading, setMixedGuidanceLoading] = useState(false);
@@ -912,6 +915,74 @@ async function findMixedRecoverySolution() {
   const hasActiveDiagnosis =
     activeViolations.length > 0;
 
+  // Start mixed-recovery guidance automatically as soon as an infeasible,
+  // diagnosed request reaches Step 4. This is independent from the separate
+  // minimum-perturbation request.
+  const mixedRecoveryRequestKey = useMemo(
+    () => JSON.stringify(mixedRecoveryRequest),
+    [mixedRecoveryRequest],
+  );
+
+  useEffect(() => {
+    setMixedGuidance(null);
+    setMixedGuidanceError(null);
+    setMixedRecoveryResult(null);
+    setMixedPerturbationLimit(0);
+    setMixedRecoveryOpen(false);
+    autoRearrangementsStartedRef.current = false;
+    setRearrangementsLoading(false);
+  }, [mixedRecoveryRequestKey]);
+
+  useEffect(() => {
+    if (
+      !hasActiveDiagnosis ||
+      needsInteractiveDiagnosis ||
+      mixedGuidance ||
+      mixedGuidanceLoading
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const groups = await loadRelaxableConstraints();
+        if (cancelled) return;
+
+        const constraints = flattenRelaxableConstraints(groups);
+        await refreshMixedRecoveryGuidance(
+          protectedConstraintIds,
+          constraints,
+        );
+      } catch (error) {
+        if (cancelled) return;
+
+        console.error(
+          "Failed to prepare automatic mixed recovery guidance:",
+          error,
+        );
+        setMixedGuidanceError(
+          error instanceof Error
+            ? error.message
+            : "Could not prepare mixed recovery guidance.",
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // mixedRecoveryRequestKey intentionally resets this effect when the
+    // reschedule request changes. Guidance/protection changes are handled
+    // explicitly elsewhere.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    hasActiveDiagnosis,
+    needsInteractiveDiagnosis,
+    mixedRecoveryRequestKey,
+  ]);
+
 
   /*
    * Load every distinct historical-impact dataset needed by the current
@@ -1008,16 +1079,76 @@ async function findMixedRecoverySolution() {
   ]);
 
 
+const perturbationAvailability =
+  !needsInteractiveDiagnosis &&
+  solverResult?.status === "infeasible"
+    ? solverResult.recovery_options?.can_perturb ?? null
+    : false;
+
+const checkingPerturbations =
+  !needsInteractiveDiagnosis &&
+  solverResult?.status === "infeasible" &&
+  (minimumPerturbationLoading || perturbationAvailability === null);
+
 const canRearrange =
   !needsInteractiveDiagnosis &&
   solverResult?.status === "infeasible" &&
-  solverResult.recovery_options?.can_perturb === true;
+  perturbationAvailability === true;
 
 const minimumPerturbations =
   !needsInteractiveDiagnosis &&
   solverResult?.status === "infeasible"
     ? solverResult.recovery_options?.minimum_perturbations ?? null
     : null;
+
+
+  /*
+   * Once the lightweight minimum-perturbation check confirms that a
+   * perturbation-only recovery exists, automatically load the actual
+   * rearrangement alternatives. This keeps Step 4 fast: the page renders
+   * first, the minimum is calculated separately, and only then do we ask
+   * for the full solution alternatives.
+   *
+   * The parent owns perturbationAlternatives, so a successful response
+   * prevents this effect from running again. rearrangementsLoading also
+   * prevents duplicate requests while the alternatives request is active.
+   */
+  useEffect(() => {
+    if (
+      !canRearrange ||
+      checkingPerturbations ||
+      perturbationAlternatives !== null ||
+      autoRearrangementsStartedRef.current
+    ) {
+      return;
+    }
+
+    // Mark this request as started before changing state. The previous version
+    // depended on rearrangementsLoading; setting it to true immediately ran the
+    // effect cleanup, which marked the request as cancelled and prevented the
+    // finally block from ever clearing the spinner.
+    autoRearrangementsStartedRef.current = true;
+    setRearrangementsLoading(true);
+
+    void Promise.resolve(onFindRearrangements())
+      .catch((error) => {
+        console.error(
+          "Failed to automatically load rearrangement alternatives:",
+          error,
+        );
+      })
+      .finally(() => {
+        setRearrangementsLoading(false);
+      });
+
+    // onFindRearrangements is intentionally omitted: the ref guarantees one
+    // automatic alternatives request per reschedule request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    canRearrange,
+    checkingPerturbations,
+    perturbationAlternatives,
+  ]);
 
 
   /*
@@ -1037,9 +1168,11 @@ const minimumPerturbations =
     hasActiveDiagnosis &&
     unrelaxableViolations.length === 0;
 
+  // Mixed recovery has its own solver/guidance path. It only needs a
+  // diagnosed infeasible request; it does not need to wait for the separate
+  // perturbation-only calculation to prove canRearrange.
   const canMixedRecovery =
-    hasActiveDiagnosis &&
-    (canRelax || canRearrange);
+    hasActiveDiagnosis;
 
 
   const lecturerUnavailableViolation =
@@ -2289,7 +2422,8 @@ function getAdditionalChangeSessionLabel(
                 <>
                   {firstUnrelaxableViolation &&
                     !canRelax &&
-                    !canRearrange && (
+                    !canRearrange &&
+                    !checkingPerturbations && (
                     <div
                       style={{
                         marginTop: "18px",
@@ -2466,23 +2600,20 @@ function getAdditionalChangeSessionLabel(
                         <button
                           type="button"
                           className="find-rearrangements-button"
-                          disabled={!canMixedRecovery || solverLoading || mixedGuidanceLoading}
-                          onClick={async () => {
-                            const groups = await loadRelaxableConstraints();
-                            const constraints = flattenRelaxableConstraints(groups);
-                            await refreshMixedRecoveryGuidance(
-                              protectedConstraintIds,
-                              constraints,
-                            );
+                          disabled={!canMixedRecovery || solverLoading}
+                          onClick={() => {
+                            // Guidance starts automatically when Step 4 receives
+                            // an infeasible diagnosis. This button only reveals
+                            // the independently running/resulting mixed-recovery UI.
                             setMixedResultsMinimized(false);
                             setMixedRecoveryOpen(true);
                           }}
                           aria-busy={mixedGuidanceLoading}
                         >
                           {mixedGuidanceLoading
-                            ? "Calculating mixed recovery…"
+                            ? "View mixed recovery progress"
                             : mixedRecoveryOpen
-                              ? "Refresh mixed recovery"
+                              ? "Mixed recovery open"
                               : "Explore mixed recovery"}
 
                           {mixedGuidanceLoading ? (
@@ -2500,7 +2631,7 @@ function getAdditionalChangeSessionLabel(
 
                     {/* RIGHT — PERTURBATION ONLY */}
                     <div
-                      className={`recovery-option ${!canRearrange ? "disabled" : ""}`}
+                      className={`recovery-option ${!canRearrange && !checkingPerturbations ? "disabled" : ""}`}
                       style={{
                         display: "flex",
                         flexDirection: "column",
@@ -2509,21 +2640,38 @@ function getAdditionalChangeSessionLabel(
                       }}
                     >
                       <div className="recovery-option-icon">
-                        <RefreshCw size={20} />
+                        <RefreshCw
+                          size={20}
+                          style={
+                            checkingPerturbations
+                              ? { animation: "step4SolverSpin 0.8s linear infinite" }
+                              : undefined
+                          }
+                        />
                       </div>
 
                       <div style={{ marginTop: "14px" }}>
                         <div className="recovery-title-with-status">
                           <h4>Move other classes only</h4>
 
-                          {!canRearrange && (
+                          {!checkingPerturbations && !canRearrange && (
                             <span className="recovery-unavailable-badge">
                               Not available
                             </span>
                           )}
                         </div>
 
-                        {canRearrange ? (
+                        {checkingPerturbations ? (
+                          <>
+                            <span className="recovery-protection">
+                              No constraints will be relaxed.
+                            </span>
+
+                            <p style={{ marginTop: "10px" }}>
+                              Calculating minimum additional perturbations…
+                            </p>
+                          </>
+                        ) : canRearrange ? (
                           <>
                             <span className="recovery-protection">
                               No constraints will be relaxed.
@@ -2548,7 +2696,12 @@ function getAdditionalChangeSessionLabel(
                         <button
                           type="button"
                           className="find-rearrangements-button"
-                          disabled={!canRearrange || solverLoading || rearrangementsLoading}
+                          disabled={
+                            checkingPerturbations ||
+                            !canRearrange ||
+                            solverLoading ||
+                            rearrangementsLoading
+                          }
                           onClick={async () => {
                             if (rearrangementsLoading) return;
                             setRearrangementsLoading(true);
@@ -2558,16 +2711,19 @@ function getAdditionalChangeSessionLabel(
                               setRearrangementsLoading(false);
                             }
                           }}
-                          aria-busy={rearrangementsLoading}
+                          aria-busy={checkingPerturbations || rearrangementsLoading}
                         >
-                          {rearrangementsLoading
-                            ? perturbationAlternatives?.status === "feasible"
-                              ? "Refreshing rearrangements…"
-                              : "Finding rearrangements…"
-                            : perturbationAlternatives?.status === "feasible"
-                              ? "Refresh rearrangements"
-                              : "Find rearrangements"}
-                          {rearrangementsLoading ? (
+                          {checkingPerturbations
+                            ? "Checking rearrangements…"
+                            : rearrangementsLoading
+                              ? perturbationAlternatives?.status === "feasible"
+                                ? "Refreshing rearrangements…"
+                                : "Finding rearrangements…"
+                              : perturbationAlternatives?.status === "feasible"
+                                ? "Refresh rearrangements"
+                                : "Find rearrangements"}
+
+                          {checkingPerturbations || rearrangementsLoading ? (
                             <RefreshCw
                               size={16}
                               aria-hidden="true"

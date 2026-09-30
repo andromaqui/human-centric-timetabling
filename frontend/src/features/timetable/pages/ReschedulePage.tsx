@@ -257,7 +257,7 @@ type PerturbationAlternativesResponse = {
 };
 
 type RecoveryOptions = {
-  can_perturb: boolean;
+  can_perturb: boolean | null;
   minimum_perturbations: number | null;
 };
 
@@ -417,6 +417,7 @@ export function ReschedulePage() {
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const [rescheduleScope, setRescheduleScope] = useState<RescheduleScope>(null);
   const [solverResult, setSolverResult] = useState<RescheduleResponse | null>(null);
+  const [minimumPerturbationLoading, setMinimumPerturbationLoading] = useState(false);
   const [perturbationAlternatives, setPerturbationAlternatives] = useState<PerturbationAlternativesResponse | null>(null);
   const [solverLoading, setSolverLoading] = useState(false);
   // Keep perturbation refreshes local to the rearrangement request so Step 4
@@ -1448,8 +1449,37 @@ export function ReschedulePage() {
     };
   }
 
+  async function loadMinimumPerturbations(request: RescheduleRequest) {
+    setMinimumPerturbationLoading(true);
+
+    try {
+      const recovery = await api.post<RecoveryOptions>(
+        "/solver/reschedule/minimum-perturbations",
+        request,
+      );
+
+      setSolverResult((current) => {
+        if (!current || current.status !== "infeasible") {
+          return current;
+        }
+
+        return {
+          ...current,
+          recovery_options: recovery,
+        };
+      });
+    } catch (error) {
+      // This is a secondary/background calculation. Keep Step 4 usable even
+      // if it fails instead of turning it into a page-level solver error.
+      console.error("Failed to calculate minimum perturbations:", error);
+    } finally {
+      setMinimumPerturbationLoading(false);
+    }
+  }
+
   async function runReschedule() {
     setSolverLoading(true);
+    setMinimumPerturbationLoading(false);
     setSolverError(null);
     setAppliedTemporaryDeactivations([]);
     setActiveStoredSolution(null);
@@ -1472,7 +1502,17 @@ export function ReschedulePage() {
         "/solver/reschedule",
         request,
       );
+
       setSolverResult(result);
+
+      // Do not await this. Step 4 can render immediately while the minimum
+      // perturbation count is calculated in the background.
+      if (
+        result.status === "infeasible" &&
+        result.recovery_options?.can_perturb === null
+      ) {
+        void loadMinimumPerturbations(request);
+      }
     } catch (error) {
       console.error("Failed to reschedule session:", error);
       setSolverError(
@@ -2836,6 +2876,7 @@ async function runRescheduleWithAdditionalChanges() {
               <>
             <Step4Solution
               solverLoading={solverLoading}
+              minimumPerturbationLoading={minimumPerturbationLoading}
               solverError={solverError}
               solverResult={solverResult}
               selectedModuleLabel={
