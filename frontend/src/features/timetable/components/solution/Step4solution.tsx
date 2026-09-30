@@ -4,6 +4,7 @@ import {
   CalendarRange,
   ChevronDown,
   ChevronUp,
+  GitCompareArrows,
   RefreshCw,
   SlidersHorizontal,
   TriangleAlert,
@@ -137,6 +138,41 @@ type MixedRecoveryResult = {
   protected_constraints?: TemporaryConstraintDeactivation[];
   used_relaxations?: TemporaryConstraintDeactivation[];
   relaxation_count?: number;
+  minimum_relaxations?: number;
+  minimum_perturbations?: number;
+  objective_score?: number | null;
+  objective_components?: {
+    room_waste: number;
+    cohort_gaps: number;
+    lecturer_idle: number;
+    cohort_room_changes: number;
+  };
+  impact?: PerturbationImpact;
+};
+
+type MixedRecoveryGuidance = {
+  status: "analysed" | "invalid";
+  case?: string;
+  relax_only?: {
+    feasible: boolean;
+    relaxation_count: number | null;
+    perturbation_count: number | null;
+  };
+  perturb_only?: {
+    feasible: boolean;
+    relaxation_count: number | null;
+    perturbation_count: number | null;
+  };
+  suggested_mixed?: {
+    max_perturbations: number | null;
+    relaxation_count: number | null;
+    reason: string | null;
+  };
+  suggested_solution?: MixedRecoveryResult | null;
+  auto_protected_constraint_types?: string[];
+  auto_protected_constraints?: TemporaryConstraintDeactivation[];
+  protected_constraints?: TemporaryConstraintDeactivation[];
+  reason?: string | null;
 };
 
 type RescheduleResponse =
@@ -260,6 +296,22 @@ export type TemporaryConstraintDeactivation = {
   day: string | null;
 };
 
+export type StoredSolutionCandidate = {
+  key: string;
+  source: "direct" | "perturbation" | "mixed";
+  label: string;
+  session_id: string;
+  day?: string;
+  time?: string;
+  room_id?: string;
+  lecturer_id?: string;
+  objective_score?: number | null;
+  additional_changes: AdditionalChange[];
+  relaxations: TemporaryConstraintDeactivation[];
+  // Preserve the exact impact object used by View impacts / Compare impacts.
+  impact?: PerturbationImpact;
+};
+
 
 const DAY_LABELS: Record<string, string> = {
   mon: "Monday",
@@ -305,7 +357,7 @@ type Step4SolutionProps = {
     constraints: TemporaryConstraintDeactivation[],
   ) => void;
 
-  onFindRearrangements: () => void;
+  onFindRearrangements: () => void | Promise<void>;
 
   appliedTemporaryDeactivations:
     TemporaryConstraintDeactivation[];
@@ -351,6 +403,9 @@ type Step4SolutionProps = {
   diagLoading: boolean;
   diagError: string | null;
   diagResult: Diagnostics | null;
+
+  onStoreSolution: (solution: StoredSolutionCandidate) => void;
+  storedSolutionKeys: string[];
 };
 
 
@@ -416,6 +471,8 @@ export function Step4Solution({
   onFindRearrangements,
 
   appliedTemporaryDeactivations,
+  onStoreSolution,
+  storedSolutionKeys,
 }: Step4SolutionProps) {
   const [
     selectedRecoveryOption,
@@ -424,18 +481,48 @@ export function Step4Solution({
 
   const [explanationOpen, setExplanationOpen] = useState(true);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [perturbationResultsMinimized, setPerturbationResultsMinimized] = useState(false);
+  const [mixedResultsMinimized, setMixedResultsMinimized] = useState(false);
+  const [mixedSolutionMinimized, setMixedSolutionMinimized] = useState(false);
+  const [mixedConfigurationMinimized, setMixedConfigurationMinimized] = useState(false);
 
   const [mixedRecoveryOpen, setMixedRecoveryOpen] = useState(false);
-  const [mixedPerturbationLimit, setMixedPerturbationLimit] = useState(1);
+  const [rearrangementsLoading, setRearrangementsLoading] = useState(false);
+  const [mixedPerturbationLimit, setMixedPerturbationLimit] = useState(0);
+  const [mixedGuidance, setMixedGuidance] = useState<MixedRecoveryGuidance | null>(null);
+  const [mixedGuidanceLoading, setMixedGuidanceLoading] = useState(false);
+  const [mixedGuidanceError, setMixedGuidanceError] = useState<string | null>(null);
 
   const [relaxableConstraints, setRelaxableConstraints] = useState<RelaxableConstraintGroups | null>(null);
   const [protectedConstraintIds, setProtectedConstraintIds] = useState<string[]>([]);
   const [protectedConstraintsOpen, setProtectedConstraintsOpen] = useState(false);
+  const [constraintSearch, setConstraintSearch] = useState("");
+  const [expandedConstraintTypes, setExpandedConstraintTypes] = useState<string[]>([]);
+  const [protectedSummaryOpen, setProtectedSummaryOpen] = useState(false);
   const [mixedRecoveryLoading, setMixedRecoveryLoading] = useState(false);
   const [mixedRecoveryError, setMixedRecoveryError] = useState<string | null>(null);
   const [mixedRecoveryResult, setMixedRecoveryResult] = useState<MixedRecoveryResult | null>(null);
   const [selectedPerturbationImpact, setSelectedPerturbationImpact] = useState<PerturbationImpact | null>(null);
   const [showImpactComparison, setShowImpactComparison] = useState(false);
+
+  function isStored(key: string) {
+    return storedSolutionKeys.includes(key);
+  }
+
+  function storeButton(candidate: StoredSolutionCandidate, inline = false) {
+    const stored = isStored(candidate.key);
+    return (
+      <button
+        type="button"
+        className="find-rearrangements-button"
+        disabled={stored}
+        onClick={() => onStoreSolution(candidate)}
+        style={{ width: "auto", marginTop: inline ? 0 : "14px" }}
+      >
+        {stored ? "Stored" : "Store"}
+      </button>
+    );
+  }
   /*
    * Historical impacts used in the Relax Constraints section.
    *
@@ -460,9 +547,9 @@ export function Step4Solution({
   }
 
 
-async function loadRelaxableConstraints() {
+async function loadRelaxableConstraints(): Promise<RelaxableConstraintGroups> {
   if (relaxableConstraints) {
-    return;
+    return relaxableConstraints;
   }
 
   const data = await api.get<RelaxableConstraintGroups>(
@@ -470,7 +557,7 @@ async function loadRelaxableConstraints() {
   );
 
   setRelaxableConstraints(data);
-
+  return data;
 }
 
 
@@ -493,8 +580,260 @@ const allRelaxableConstraints = relaxableConstraints
 
 const selectedProtectedConstraints = allRelaxableConstraints.filter(
   (constraint) =>
-    protectedConstraintIds.includes(constraint.instance_id),
+    protectedConstraintIds.includes(getProtectionKey(constraint)),
 );
+
+const groupedProtectedConstraints = useMemo(() => {
+  type StakeholderGroup = {
+    key: string;
+    name: string;
+    days: string[];
+    count: number;
+  };
+
+  type ConstraintGroup = {
+    id: string;
+    name: string;
+    stakeholders: StakeholderGroup[];
+    count: number;
+  };
+
+  const constraintMap = new Map<
+    string,
+    {
+      id: string;
+      name: string;
+      stakeholders: Map<string, StakeholderGroup>;
+      count: number;
+    }
+  >();
+
+  for (const constraint of selectedProtectedConstraints) {
+    let constraintGroup = constraintMap.get(constraint.constraint_id);
+
+    if (!constraintGroup) {
+      constraintGroup = {
+        id: constraint.constraint_id,
+        name: constraint.constraint_name,
+        stakeholders: new Map(),
+        count: 0,
+      };
+      constraintMap.set(constraint.constraint_id, constraintGroup);
+    }
+
+    constraintGroup.count += 1;
+
+    const stakeholderKey = `${constraint.instance_type}:${constraint.stakeholder_id}`;
+    let stakeholderGroup = constraintGroup.stakeholders.get(stakeholderKey);
+
+    if (!stakeholderGroup) {
+      stakeholderGroup = {
+        key: stakeholderKey,
+        name: constraint.stakeholder_name,
+        days: [],
+        count: 0,
+      };
+      constraintGroup.stakeholders.set(stakeholderKey, stakeholderGroup);
+    }
+
+    stakeholderGroup.count += 1;
+
+    if (constraint.day) {
+      const dayKey = constraint.day.slice(0, 3).toLowerCase();
+      const dayLabel = DAY_LABELS[dayKey] ?? constraint.day;
+
+      if (!stakeholderGroup.days.includes(dayLabel)) {
+        stakeholderGroup.days.push(dayLabel);
+      }
+    }
+  }
+
+  const dayOrder = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+  ];
+
+  return Array.from(constraintMap.values())
+    .map(
+      (constraintGroup): ConstraintGroup => ({
+        id: constraintGroup.id,
+        name: constraintGroup.name,
+        count: constraintGroup.count,
+        stakeholders: Array.from(constraintGroup.stakeholders.values())
+          .map((stakeholder) => ({
+            ...stakeholder,
+            days: [...stakeholder.days].sort(
+              (a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b),
+            ),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      }),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+}, [selectedProtectedConstraints]);
+
+type PickerConstraint = (typeof allRelaxableConstraints)[number];
+
+function getProtectionKey(constraint: PickerConstraint) {
+  return [
+    constraint.constraint_id,
+    constraint.instance_type,
+    constraint.stakeholder_id,
+    constraint.day ?? "",
+  ].join("::");
+}
+type PickerStakeholderGroup = { key: string; name: string; constraints: PickerConstraint[] };
+type PickerConstraintGroup = { key: string; id: string; name: string; constraints: PickerConstraint[]; stakeholders: PickerStakeholderGroup[] };
+type PickerStakeholderTypeGroup = { type: PickerConstraint["instance_type"]; label: string; constraints: PickerConstraint[]; constraintGroups: PickerConstraintGroup[] };
+
+const pickerDayOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+function getPickerDayLabel(day: string | null) {
+  if (!day) return null;
+  return DAY_LABELS[day.slice(0, 3).toLowerCase()] ?? day;
+}
+
+const groupedConstraintPicker = useMemo<PickerStakeholderTypeGroup[]>(() => {
+  const search = constraintSearch.trim().toLowerCase();
+  const visible = allRelaxableConstraints.filter((constraint) => !search || [
+    constraint.constraint_name, constraint.stakeholder_name, constraint.instance_type,
+    getPickerDayLabel(constraint.day) ?? "",
+  ].some((value) => value.toLowerCase().includes(search)));
+
+  const typeConfig: Array<{ type: PickerConstraint["instance_type"]; label: string }> = [
+    { type: "lecturer", label: "Lecturer constraints" },
+    { type: "cohort", label: "Cohort constraints" },
+    { type: "session", label: "Session constraints" },
+  ];
+
+  return typeConfig.map(({ type, label }) => {
+    const typeConstraints = visible.filter((constraint) => constraint.instance_type === type);
+    const byConstraint = new Map<string, PickerConstraint[]>();
+    for (const constraint of typeConstraints) byConstraint.set(constraint.constraint_id, [...(byConstraint.get(constraint.constraint_id) ?? []), constraint]);
+    const constraintGroups = Array.from(byConstraint.entries()).map(([constraintId, constraints]) => {
+      const byStakeholder = new Map<string, PickerConstraint[]>();
+      for (const constraint of constraints) {
+        const key = `${constraint.instance_type}:${constraint.stakeholder_id}`;
+        byStakeholder.set(key, [...(byStakeholder.get(key) ?? []), constraint]);
+      }
+      return {
+        key: `${type}:${constraintId}`, id: constraintId, name: constraints[0]?.constraint_name ?? constraintId, constraints,
+        stakeholders: Array.from(byStakeholder.entries()).map(([key, stakeholderConstraints]) => ({
+          key, name: stakeholderConstraints[0]?.stakeholder_name ?? stakeholderConstraints[0]?.stakeholder_id ?? key,
+          constraints: [...stakeholderConstraints].sort((a,b) => {
+            const ad=getPickerDayLabel(a.day), bd=getPickerDayLabel(b.day);
+            if (!ad && !bd) return 0; if (!ad) return -1; if (!bd) return 1;
+            return pickerDayOrder.indexOf(ad)-pickerDayOrder.indexOf(bd);
+          }),
+        })).sort((a,b)=>a.name.localeCompare(b.name)),
+      };
+    }).sort((a,b)=>a.name.localeCompare(b.name));
+    return { type, label, constraints: typeConstraints, constraintGroups };
+  }).filter((group)=>group.constraints.length>0);
+}, [allRelaxableConstraints, constraintSearch]);
+
+function getProtectedCount(constraints: PickerConstraint[]) {
+  return constraints.reduce(
+    (count, constraint) =>
+      count +
+      (protectedConstraintIds.includes(getProtectionKey(constraint)) ? 1 : 0),
+    0,
+  );
+}
+
+function setConstraintsProtected(
+  constraints: PickerConstraint[],
+  shouldProtect: boolean,
+) {
+  const affectedIds = new Set(constraints.map(getProtectionKey));
+
+  const nextIds = shouldProtect
+    ? Array.from(
+        new Set([
+          ...protectedConstraintIds,
+          ...Array.from(affectedIds),
+        ]),
+      )
+    : protectedConstraintIds.filter((id) => !affectedIds.has(id));
+
+  setProtectedConstraintIds(nextIds);
+  setMixedRecoveryResult(null);
+}
+function toggleConstraintTypeOpen(key: string) {
+  setExpandedConstraintTypes((current) => current.includes(key) ? current.filter((item)=>item!==key) : [...current,key]);
+}
+function setIndeterminate(element: HTMLInputElement | null, checkedCount: number, totalCount: number) {
+  if (element) element.indeterminate = checkedCount > 0 && checkedCount < totalCount;
+}
+
+function flattenRelaxableConstraints(groups: RelaxableConstraintGroups) {
+  return [
+    ...groups.lecturer.map((constraint) => ({ ...constraint, instance_type: "lecturer" as const })),
+    ...groups.cohort.map((constraint) => ({ ...constraint, instance_type: "cohort" as const })),
+    ...groups.session.map((constraint) => ({ ...constraint, instance_type: "session" as const })),
+  ];
+}
+
+function buildProtectedConstraintPayload(
+  ids: string[],
+  constraints = allRelaxableConstraints,
+): TemporaryConstraintDeactivation[] {
+  return constraints
+    .filter((constraint) => ids.includes(getProtectionKey(constraint)))
+    .map((constraint) => ({
+      constraint_id: constraint.constraint_id,
+      instance_type: constraint.instance_type,
+      instance_id: constraint.stakeholder_id,
+      day: constraint.day,
+    }));
+}
+
+async function refreshMixedRecoveryGuidance(
+  ids: string[],
+  constraints = allRelaxableConstraints,
+) {
+  setMixedGuidanceLoading(true);
+  setMixedGuidanceError(null);
+  setMixedRecoveryResult(null);
+
+  try {
+    const protectedConstraints = buildProtectedConstraintPayload(ids, constraints);
+    const result = await api.post<MixedRecoveryGuidance>(
+      "/solver/reschedule/mixed/guidance",
+      {
+        request: {
+          ...mixedRecoveryRequest,
+          temporarily_deactivated_constraints: [],
+          max_additional_changes: null,
+        },
+        // Guidance does not use this budget; the shared request schema requires it.
+        max_perturbations: 0,
+        protected_constraints: protectedConstraints,
+      },
+    );
+
+    setMixedGuidance(result);
+    setMixedRecoveryResult(result.suggested_solution ?? null);
+
+    const suggestedBudget =
+      result.suggested_mixed?.max_perturbations;
+
+    if (typeof suggestedBudget === "number") {
+      setMixedPerturbationLimit(suggestedBudget);
+    }
+  } catch (error) {
+    console.error("Failed to load mixed recovery guidance:", error);
+    setMixedGuidanceError(
+      error instanceof Error
+        ? error.message
+        : "Could not calculate recovery guidance.",
+    );
+  } finally {
+    setMixedGuidanceLoading(false);
+  }
+}
 
 async function findMixedRecoverySolution() {
   setMixedRecoveryLoading(true);
@@ -1147,6 +1486,19 @@ function getAdditionalChangeSessionLabel(
 
   return (
     <>
+      <style>{`
+        @keyframes step4SolverSpin { to { transform: rotate(360deg); } }
+        .find-rearrangements-button,
+        .back-to-request-button {
+          background: #f8fafc !important;
+          color: #475569 !important;
+          border-color: #cbd5e1 !important;
+        }
+        .find-rearrangements-button:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+      `}</style>
       <h2>Solution</h2>
 
       {(!solverResult || solverResult.status === "feasible") && (
@@ -1182,7 +1534,7 @@ function getAdditionalChangeSessionLabel(
 
       {/* FEASIBLE FLOW */}
 
-      {!solverLoading && solverResult?.status ==="feasible" && (
+      {solverResult?.status ==="feasible" && (
           <div className="solution-options">
 
             {(solverResult.objective_score != null ||
@@ -1467,14 +1819,27 @@ function getAdditionalChangeSessionLabel(
                 </p>
               </div>
             )}
+
+            {storeButton({
+              key: `direct:${solverResult.session_id}:${solverResult.day ?? solverResult.solution?.day ?? ""}:${solverResult.time ?? solverResult.solution?.time ?? ""}:${solverResult.room_id ?? solverResult.solution?.room_id ?? ""}:${solverResult.lecturer_id ?? solverResult.solution?.lecturer_id ?? ""}:${(solverResult.additional_changes ?? []).map((change) => change.session_id).join(",")}:${appliedTemporaryDeactivations.map((item) => `${item.constraint_id}:${item.instance_id}:${item.day ?? ""}`).join(",")}`,
+              source: "direct",
+              label: appliedTemporaryDeactivations.length > 0 ? "Relaxation solution" : "Direct solution",
+              session_id: solverResult.session_id,
+              day: solverResult.day ?? solverResult.solution?.day,
+              time: solverResult.time ?? solverResult.solution?.time,
+              room_id: solverResult.room_id ?? solverResult.solution?.room_id,
+              lecturer_id: solverResult.lecturer_id ?? solverResult.solution?.lecturer_id,
+              objective_score: solverResult.objective_score,
+              additional_changes: solverResult.additional_changes ?? [],
+              relaxations: appliedTemporaryDeactivations,
+            })}
           </div>
         )}
 
 
       {/* INFEASIBLE FLOW */}
 
-      {!solverLoading &&
-        solverResult &&
+      {solverResult &&
         solverResult.status !==
           "feasible" && (
           <div className="infeasible-flow">
@@ -1978,7 +2343,7 @@ function getAdditionalChangeSessionLabel(
 
                       <div style={{ marginTop: "14px" }}>
                         <div className="recovery-title-with-status">
-                          <h4>Relax constraints only</h4>
+                          <h4>Violate constraints only</h4>
 
                           {!canRelax && (
                             <span className="recovery-unavailable-badge">
@@ -2025,26 +2390,34 @@ function getAdditionalChangeSessionLabel(
                       </div>
 
                       <div style={{ marginTop: "auto", paddingTop: "20px" }}>
-                        <button
-                          type="button"
-                          className="retry-with-relaxations-button"
-                          disabled={
-                            !canRelax ||
-                            solverLoading ||
-                            temporaryDeactivations.length === 0
-                          }
-                          onClick={() =>
-                            onRetryWithRelaxations(temporaryDeactivations)
-                          }
-                          style={{
-                            background: canRelax ? "#2563eb" : undefined,
-                            color: canRelax ? "#ffffff" : undefined,
-                            borderColor: canRelax ? "#2563eb" : undefined,
-                          }}
-                        >
-                          Accept recovery
-                          <ArrowRight size={16} />
-                        </button>
+                        {canRelax && temporaryDeactivations.length > 0
+                          ? storeButton({
+                              key: `relax:${mixedRecoveryRequest.session_id}:${mixedRecoveryRequest.requested_start ?? ""}:${mixedRecoveryRequest.requested_room_id ?? ""}:${mixedRecoveryRequest.requested_lecturer_id ?? ""}:${temporaryDeactivations.map((item) => `${item.constraint_id}:${item.instance_id}:${item.day ?? ""}`).join(",")}`,
+                              source: "direct",
+                              label: "Relaxation solution",
+                              session_id: mixedRecoveryRequest.session_id,
+                              day: diagDay ?? activeViolations.find((violation) => violation.day)?.day,
+                              time:
+                                diagTime ??
+                                (mixedRecoveryRequest.requested_start
+                                  ? mixedRecoveryRequest.requested_start.slice(11, 16)
+                                  : undefined),
+                              room_id: diagRoom ?? mixedRecoveryRequest.requested_room_id ?? undefined,
+                              lecturer_id: diagLecturer ?? mixedRecoveryRequest.requested_lecturer_id ?? undefined,
+                              objective_score: null,
+                              additional_changes: [],
+                              relaxations: temporaryDeactivations,
+                            })
+                          : (
+                            <button
+                              type="button"
+                              className="find-rearrangements-button"
+                              disabled
+                              style={{ width: "auto", marginTop: "14px" }}
+                            >
+                              Store
+                            </button>
+                          )}
                       </div>
                     </div>
 
@@ -2073,13 +2446,14 @@ function getAdditionalChangeSessionLabel(
                         </div>
 
                         <p>
-                          Allow some timetable changes and some constraint
-                          relaxations.
+                          Set a maximum timetable-disruption budget and let
+                          the solver preserve as many constraints as possible.
                         </p>
 
                         {canMixedRecovery ? (
                           <span className="recovery-protection">
-                            You decide what the system is allowed to change.
+                            The solver minimises relaxations first, then
+                            perturbations, then timetable-quality penalty.
                           </span>
                         ) : (
                           <span className="recovery-disabled-reason">
@@ -2089,24 +2463,34 @@ function getAdditionalChangeSessionLabel(
                       </div>
 
                       <div style={{ marginTop: "auto", paddingTop: "20px" }}>
-                       <button
+                        <button
                           type="button"
                           className="find-rearrangements-button"
-                          disabled={!canMixedRecovery || solverLoading}
+                          disabled={!canMixedRecovery || solverLoading || mixedGuidanceLoading}
                           onClick={async () => {
-                              if (!mixedRecoveryOpen) {
-                                await loadRelaxableConstraints();
-                              }
+                            const groups = await loadRelaxableConstraints();
+                            const constraints = flattenRelaxableConstraints(groups);
+                            await refreshMixedRecoveryGuidance(
+                              protectedConstraintIds,
+                              constraints,
+                            );
+                            setMixedResultsMinimized(false);
+                            setMixedRecoveryOpen(true);
+                          }}
+                          aria-busy={mixedGuidanceLoading}
+                        >
+                          {mixedGuidanceLoading
+                            ? "Calculating mixed recovery…"
+                            : mixedRecoveryOpen
+                              ? "Refresh mixed recovery"
+                              : "Explore mixed recovery"}
 
-                              setMixedRecoveryOpen((open) => !open);
-                            }}
-                            >
-                          {mixedRecoveryOpen
-                            ? "Close configuration"
-                            : "Configure recovery"}
-
-                          {mixedRecoveryOpen ? (
-                            <ChevronUp size={16} />
+                          {mixedGuidanceLoading ? (
+                            <RefreshCw
+                              size={16}
+                              aria-hidden="true"
+                              style={{ animation: "step4SolverSpin 0.8s linear infinite" }}
+                            />
                           ) : (
                             <ArrowRight size={16} />
                           )}
@@ -2130,7 +2514,7 @@ function getAdditionalChangeSessionLabel(
 
                       <div style={{ marginTop: "14px" }}>
                         <div className="recovery-title-with-status">
-                          <h4>Perturbations only</h4>
+                          <h4>Move other classes only</h4>
 
                           {!canRearrange && (
                             <span className="recovery-unavailable-badge">
@@ -2138,11 +2522,6 @@ function getAdditionalChangeSessionLabel(
                             </span>
                           )}
                         </div>
-
-                        <p>
-                          Keep all constraints enforced and move other classes to
-                          make this request possible.
-                        </p>
 
                         {canRearrange ? (
                           <>
@@ -2152,7 +2531,7 @@ function getAdditionalChangeSessionLabel(
 
                             {minimumPerturbations !== null && (
                               <p style={{ marginTop: "10px" }}>
-                                Minimum additional classes affected:{" "}
+                                Minimum additional perturbations:{" "}
                                 <strong>{minimumPerturbations}</strong>
                               </p>
                             )}
@@ -2169,13 +2548,34 @@ function getAdditionalChangeSessionLabel(
                         <button
                           type="button"
                           className="find-rearrangements-button"
-                          disabled={!canRearrange || solverLoading}
-                          onClick={onFindRearrangements}
+                          disabled={!canRearrange || solverLoading || rearrangementsLoading}
+                          onClick={async () => {
+                            if (rearrangementsLoading) return;
+                            setRearrangementsLoading(true);
+                            try {
+                              await onFindRearrangements();
+                            } finally {
+                              setRearrangementsLoading(false);
+                            }
+                          }}
+                          aria-busy={rearrangementsLoading}
                         >
-                          {perturbationAlternatives?.status === "feasible"
-                            ? "Refresh rearrangements"
-                            : "Find rearrangements"}
-                          <ArrowRight size={16} />
+                          {rearrangementsLoading
+                            ? perturbationAlternatives?.status === "feasible"
+                              ? "Refreshing rearrangements…"
+                              : "Finding rearrangements…"
+                            : perturbationAlternatives?.status === "feasible"
+                              ? "Refresh rearrangements"
+                              : "Find rearrangements"}
+                          {rearrangementsLoading ? (
+                            <RefreshCw
+                              size={16}
+                              aria-hidden="true"
+                              style={{ animation: "step4SolverSpin 0.8s linear infinite" }}
+                            />
+                          ) : (
+                            <ArrowRight size={16} />
+                          )}
                         </button>
                       </div>
                     </div>
@@ -2192,31 +2592,76 @@ function getAdditionalChangeSessionLabel(
                           background: "#f8fafc",
                         }}
                       >
-                        <div style={{ marginBottom: "16px" }}>
-                          <span className="infeasible-eyebrow">
-                            PERTURBATION RECOVERY
-                          </span>
-                          <h3 style={{ margin: "6px 0 0" }}>
-                            {perturbationAlternatives.solutions.length}{" "}
-                            {perturbationAlternatives.solutions.length === 1
-                              ? "feasible rearrangement found"
-                              : "feasible rearrangements found"}
-                          </h3>
-                          <p className="step-description" style={{ marginBottom: 0 }}>
-                            Each option keeps all active constraints enforced and moves
-                            the minimum number of additional classes.
-                          </p>
+                        <div style={{ marginBottom: perturbationResultsMinimized ? 0 : "16px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px" }}>
+                            <div>
+                              <span className="infeasible-eyebrow">
+                                PERTURBATION RECOVERY
+                              </span>
+                              <h3 style={{ margin: "6px 0 0" }}>
+                                {perturbationAlternatives.solutions.length}{" "}
+                                {perturbationAlternatives.solutions.length === 1
+                                  ? "feasible rearrangement found"
+                                  : "feasible rearrangements found"}
+                              </h3>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setPerturbationResultsMinimized((minimized) => !minimized)}
+                              aria-expanded={!perturbationResultsMinimized}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                padding: "7px 10px",
+                                border: "1px solid #cbd5e1",
+                                borderRadius: "8px",
+                                background: "#f8fafc",
+                                color: "#475569",
+                                fontSize: "12px",
+                                fontWeight: 700,
+                                cursor: "pointer",
+                                flexShrink: 0,
+                              }}
+                            >
+                              {perturbationResultsMinimized ? "Expand" : "Minimize"}
+                              {perturbationResultsMinimized ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+                            </button>
+                          </div>
+
+                          {!perturbationResultsMinimized && (
+                            <p className="step-description" style={{ marginBottom: 0 }}>
+                              Each option keeps all active constraints enforced and moves
+                              the minimum number of additional classes.
+                            </p>
+                          )}
 
 
-                          <button
-                                          type="button"
+                          {!perturbationResultsMinimized && <button
+                                      type="button"
                                           onClick={() => setShowImpactComparison(true)}
+                                          style={{
+                                            marginTop: "14px",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "8px",
+                                            padding: "9px 14px",
+                                            border: "1px solid #cbd5e1",
+                                            borderRadius: "8px",
+                                            background: "#f8fafc",
+                                            color: "#475569",
+                                            fontSize: "13px",
+                                            fontWeight: 700,
+                                            cursor: "pointer",
+                                            boxShadow: "0 1px 2px rgba(15, 23, 42, 0.05)",
+                                          }}
                                         >
+                                          <GitCompareArrows size={16} />
                                           Compare impacts
-                                        </button>
+                                        </button>}
                         </div>
 
-                        <div
+                        {!perturbationResultsMinimized && <div
                           style={{
                             display: "grid",
                             gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
@@ -2319,7 +2764,8 @@ function getAdditionalChangeSessionLabel(
                               padding: "9px 12px",
                               border: "1px solid #cbd5e1",
                               borderRadius: "8px",
-                              background: "#ffffff",
+                              background: "#f8fafc",
+                              color: "#475569",
                               cursor: "pointer",
                               fontWeight: 600,
                             }}
@@ -2328,6 +2774,21 @@ function getAdditionalChangeSessionLabel(
                           </button>
                         )}
 
+                        {storeButton({
+                          key: `perturbation:${solution.session_id}:${solution.rank}:${solution.day}:${solution.time}:${solution.room_id}:${solution.lecturer_id}`,
+                          source: "perturbation",
+                          label: `Perturbation solution ${solution.rank ?? index + 1}`,
+                          session_id: solution.session_id,
+                          day: solution.day,
+                          time: solution.time,
+                          room_id: solution.room_id,
+                          lecturer_id: solution.lecturer_id,
+                          objective_score: solution.objective_score,
+                          additional_changes: solution.additional_changes ?? [],
+                          relaxations: [],
+                          impact: solution.impact,
+                        })}
+
                         <p
                                 style={{
                                   margin: "14px 0 0",
@@ -2335,11 +2796,10 @@ function getAdditionalChangeSessionLabel(
                                   color: "#64748b",
                                 }}
                               >
-                                No constraints relaxed. Additional-class lecturers remain unchanged.
                               </p>
                             </div>
                           ))}
-                        </div>
+                        </div>}
                       </section>
                     )}
 
@@ -2360,24 +2820,7 @@ function getAdditionalChangeSessionLabel(
                     )}
 
                   {mixedRecoveryOpen && (
-                      <>
-                         <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "flex-end",
-                            marginBottom: "12px",
-                          }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => setMixedRecoveryOpen(false)}
-                            className="find-rearrangements-button"
-                          >
-                            Minimise
-                            <ChevronUp size={16} />
-                          </button>
-                        </div>
-
+                    <>
                       <div
                         style={{
                           marginTop: "14px",
@@ -2387,86 +2830,15 @@ function getAdditionalChangeSessionLabel(
                           borderRadius: "12px",
                         }}
                       >
-                        {/* PERTURBATION LIMIT */}
-
-                        <div>
-                          <div
-                            style={{
-                              fontSize: "12px",
-                              fontWeight: 700,
-                              color: "#64748b",
-                              textTransform: "uppercase",
-                              letterSpacing: "0.05em",
-                            }}
-                          >
-                            Perturbation limit
-                          </div>
-
-                          <div
-                            style={{
-                              marginTop: "12px",
-                              fontWeight: 600,
-                            }}
-                          >
-                            Maximum additional classes that may be moved
-                          </div>
-
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "10px",
-                              marginTop: "10px",
-                            }}
-                          >
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setMixedPerturbationLimit((value) =>
-                                  Math.max(0, value - 1)
-                                )
-                              }
-                            >
-                              −
-                            </button>
-
-                            <strong
-                              style={{
-                                minWidth: "32px",
-                                textAlign: "center",
-                              }}
-                            >
-                              {mixedPerturbationLimit}
-                            </strong>
-
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setMixedPerturbationLimit((value) => value + 1)
-                              }
-                            >
-                              +
-                            </button>
-                          </div>
-                        </div>
-
                         <div
                           style={{
-                            margin: "22px 0",
-                            borderTop: "1px solid #d9e0ea",
-                          }}
-                        />
-
-                        {/* CONSTRAINT RELAXATIONS */}
-                        <div
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
-                            gap: "32px",
-                            alignItems: "start",
+                            display: "flex",
+                            alignItems: "flex-start",
+                            justifyContent: "space-between",
+                            gap: "16px",
+                            marginBottom: mixedResultsMinimized ? 0 : "18px",
                           }}
                         >
-                          {/* LEFT — CONSTRAINT PICKER */}
                           <div>
                             <div
                               style={{
@@ -2477,257 +2849,144 @@ function getAdditionalChangeSessionLabel(
                                 letterSpacing: "0.05em",
                               }}
                             >
-                              CONSTRAINTS TO KEEP ENFORCED
+                              MIXED RECOVERY
                             </div>
-
-                            <p
-                              style={{
-                                margin: "6px 0 0",
-                                color: "#64748b",
-                              }}
-                            >
-                              Select any relaxable constraints that the solver must not relax.
-                            </p>
-
-                            <div
-                              style={{
-                                marginTop: "12px",
-                                width: "100%",
-                              }}
-                            >
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setProtectedConstraintsOpen((open) => !open)
-                                }
-                                style={{
-                                  width: "100%",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "space-between",
-                                  padding: "10px 12px",
-                                  background: "#ffffff",
-                                  border: "1px solid #d9e0ea",
-                                  borderRadius: "8px",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                <span>
-                                  {protectedConstraintIds.length} of{" "}
-                                  {allRelaxableConstraints.length} constraints protected
-                                </span>
-
-                                {protectedConstraintsOpen ? (
-                                  <ChevronUp size={16} />
-                                ) : (
-                                  <ChevronDown size={16} />
-                                )}
-                              </button>
-
-                              {protectedConstraintsOpen && (
-                                <div
-                                  style={{
-                                    marginTop: "6px",
-                                    padding: "6px",
-                                    background: "#ffffff",
-                                    border: "1px solid #d9e0ea",
-                                    borderRadius: "8px",
-                                    maxHeight: "320px",
-                                    overflowY: "auto",
-                                  }}
-                                >
-                                  {allRelaxableConstraints.map((constraint) => {
-                                    const checked =
-                                      protectedConstraintIds.includes(
-                                        constraint.instance_id,
-                                      );
-
-                                    return (
-                                      <label
-                                        key={constraint.instance_id}
-                                        style={{
-                                          display: "flex",
-                                          alignItems: "flex-start",
-                                          gap: "10px",
-                                          padding: "9px",
-                                          cursor: "pointer",
-                                        }}
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={checked}
-                                          onChange={() => {
-                                            setProtectedConstraintIds((current) =>
-                                              checked
-                                                ? current.filter(
-                                                    (id) =>
-                                                      id !== constraint.instance_id,
-                                                  )
-                                                : [
-                                                    ...current,
-                                                    constraint.instance_id,
-                                                  ],
-                                            );
-                                          }}
-                                        />
-
-                                        <span>
-                                          <strong>
-                                            {constraint.constraint_name}
-                                          </strong>
-
-                                          <span
-                                            style={{
-                                              display: "block",
-                                              marginTop: "2px",
-                                              fontSize: "12px",
-                                              color: "#64748b",
-                                            }}
-                                          >
-                                            {constraint.stakeholder_name}
-                                            {constraint.day
-                                              ? ` · ${
-                                                  DAY_LABELS[constraint.day] ??
-                                                  constraint.day
-                                                }`
-                                              : ""}
-                                          </span>
-                                        </span>
-                                      </label>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
+                            <h3 style={{ margin: "4px 0 0" }}>
+                              Mixed recovery
+                            </h3>
                           </div>
 
-                          {/* RIGHT — PROTECTED CONSTRAINTS */}
-                          <div
+                          <button
+                            type="button"
+                            onClick={() => setMixedResultsMinimized((minimized) => !minimized)}
+                            aria-expanded={!mixedResultsMinimized}
                             style={{
-                              padding: "16px",
-                              border: "1px solid #f3d69a",
-                              borderRadius: "10px",
-                              background: "#fff8e6",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              padding: "7px 10px",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: "8px",
+                              background: "#f8fafc",
+                              color: "#475569",
+                              fontSize: "12px",
+                              fontWeight: 700,
+                              cursor: "pointer",
+                              flexShrink: 0,
                             }}
                           >
-                            <div
-                              style={{
-                                fontSize: "12px",
-                                fontWeight: 700,
-                                color: "#92400e",
-                                textTransform: "uppercase",
-                                letterSpacing: "0.05em",
-                              }}
-                            >
-                              Constraints protected
-                            </div>
-
-                            <div
-                              style={{
-                                marginTop: "6px",
-                                fontSize: "14px",
-                                fontWeight: 600,
-                              }}
-                            >
-                              {selectedProtectedConstraints.length} selected
-                            </div>
-
-                            {selectedProtectedConstraints.length === 0 ? (
-                              <p
-                                style={{
-                                  margin: "8px 0 0",
-                                  color: "#64748b",
-                                }}
-                              >
-                                No constraints are protected. The solver may relax any
-                                relaxable constraint if needed.
-                              </p>
-                            ) : (
-                              <>
-                                <p
-                                  style={{
-                                    margin: "8px 0 0",
-                                    color: "#64748b",
-                                  }}
-                                >
-                                  The following constraints must remain enforced. Other
-                                  relaxable constraints may be relaxed if needed.
-                                </p>
-
-                                <div style={{ marginTop: "12px" }}>
-                                  {selectedProtectedConstraints.map((constraint) => (
-                                    <div
-                                      key={`protected-${constraint.instance_id}`}
-                                      style={{
-                                        padding: "10px 0",
-                                        borderTop: "1px solid #f3d69a",
-                                      }}
-                                    >
-                                      <strong>
-                                        {constraint.constraint_name}
-                                      </strong>
-
-                                      <div
-                                        style={{
-                                          marginTop: "2px",
-                                          fontSize: "13px",
-                                          color: "#64748b",
-                                        }}
-                                      >
-                                        {constraint.stakeholder_name}
-                                        {constraint.day
-                                          ? ` · ${
-                                              DAY_LABELS[constraint.day] ??
-                                              constraint.day
-                                            }`
-                                          : ""}
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-
-                                <div
-                                  style={{
-                                    marginTop: "12px",
-                                    padding: "10px 12px",
-                                    borderRadius: "8px",
-                                    background: "#fffbeb",
-                                    fontSize: "13px",
-                                    color: "#78350f",
-                                  }}
-                                >
-                                  Protected constraints will remain enforced. Constraints
-                                  you do not select may be relaxed if needed.
-                                </div>
-                              </>
-                            )}
-                          </div>
+                            {mixedResultsMinimized ? "Expand" : "Minimize"}
+                            {mixedResultsMinimized ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+                          </button>
                         </div>
 
+                        {!mixedResultsMinimized && (
+                          <>
+                            {/* MIXED RECOVERY SOLUTION — independently foldable */}
+                            <div
+                              style={{
+                                padding: "18px",
+                                border: "1px solid #d9e0ea",
+                                borderRadius: "12px",
+                                background: "#f8fafc",
+                              }}
+                            >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: "16px",
+                                padding: "0 0 12px",
+                                borderBottom: mixedSolutionMinimized ? 0 : "1px solid #d9e0ea",
+                                marginBottom: mixedSolutionMinimized ? "14px" : "18px",
+                              }}
+                            >
+                              <div>
+                                <div style={{ fontSize: "12px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                                  Solution
+                                </div>
+                                    {mixedRecoveryLoading && (
+                                          <span
+                                            style={{
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              gap: "6px",
+                                            }}
+                                          >
+                                            Calculating best solution…
+                                            <RefreshCw
+                                              size={14}
+                                              style={{
+                                                animation: "step4SolverSpin 0.8s linear infinite",
+                                              }}
+                                            />
+                                          </span>
+                                        )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setMixedSolutionMinimized((value) => !value)}
+                                aria-expanded={!mixedSolutionMinimized}
+                                title={mixedSolutionMinimized ? "Expand solution" : "Collapse solution"}
+                                aria-label={mixedSolutionMinimized ? "Expand mixed recovery solution" : "Collapse mixed recovery solution"}
+                                style={{ width: "32px", height: "32px", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, border: "1px solid #dbe3ee", borderRadius: "999px", background: "#ffffff", color: "#475569", cursor: "pointer", flexShrink: 0 }}
+                              >
+                                {mixedSolutionMinimized ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+                              </button>
+                            </div>
+
+                            {!mixedSolutionMinimized && (
+                              <>
+                        {mixedGuidanceLoading && (
                           <div
+                            role="status"
+                            aria-live="polite"
                             style={{
-                              marginTop: "18px",
+                              margin: "0 0 16px",
                               display: "flex",
-                              justifyContent: "flex-end",
+                              alignItems: "center",
+                              gap: "9px",
+                              color: "#64748b",
+                              fontSize: "13px",
                             }}
                           >
-                            <button
-                              type="button"
-                              className="find-rearrangements-button"
-                              disabled={
-                                mixedRecoveryLoading ||
-                                !canMixedRecovery
-                              }
-                              onClick={findMixedRecoverySolution}
-                            >
-                              {mixedRecoveryLoading
-                                ? "Finding solution…"
-                                : "Find best solution"}
-                              {!mixedRecoveryLoading && (
-                                <ArrowRight size={16} />
-                              )}
-                            </button>
+                            <RefreshCw
+                              size={16}
+                              aria-hidden="true"
+                              style={{ animation: "step4SolverSpin 0.8s linear infinite" }}
+                            />
+                            <span>Calculating the first useful mixed-recovery budget…</span>
                           </div>
+                        )}
+
+                        {mixedGuidanceError && (
+                          <div style={{ marginBottom: "16px", color: "#9f2929" }}>
+                            {mixedGuidanceError}
+                          </div>
+                        )}
+
+                        {/* DEFAULT / CURRENT MIXED RECOVERY SOLUTION */}
+                        {!mixedGuidanceLoading && mixedRecoveryResult?.status === "feasible" && (
+                          <div
+                           style={{
+      borderTop: "1px solid #d9e0ea",
+      paddingTop: "18px",
+      marginTop: "18px",
+    }}
+                          >
+                            <strong>Suggested recovery</strong>
+                            <div style={{ marginTop: "5px", fontSize: "13px", color: "#64748b" }}>
+                              {mixedRecoveryResult.perturbation_count ?? 0} perturbation
+                              {(mixedRecoveryResult.perturbation_count ?? 0) === 1 ? "" : "s"} + {" "}
+                              {mixedRecoveryResult.relaxation_count ?? 0} relaxation
+                              {(mixedRecoveryResult.relaxation_count ?? 0) === 1 ? "" : "s"}.
+                              {protectedConstraintIds.length > 0
+                                ? " Recalculated using your protected constraints."
+                                : " This is the first useful mixed recovery found by the guidance search."}
+                            </div>
+                          </div>
+                        )}
 
                           {mixedRecoveryError && (
                             <div
@@ -2779,9 +3038,8 @@ function getAdditionalChangeSessionLabel(
                                   letterSpacing: "0.05em",
                                 }}
                               >
-                                Mixed recovery solution
+                                Changes
                               </div>
-
                               {/* PRIMARY REQUEST */}
                               <div
                                 style={{
@@ -2853,15 +3111,16 @@ function getAdditionalChangeSessionLabel(
                                 }}
                               >
                                 <strong>
-                                  Additional classes moved ·{" "}
+                                  Perturbations used ·{" "}
                                   {mixedRecoveryResult.perturbation_count ?? 0} of{" "}
-                                  {mixedPerturbationLimit} permitted
+                                  {mixedRecoveryResult.max_perturbations ??
+                                    mixedPerturbationLimit} permitted
                                 </strong>
 
                                 {(mixedRecoveryResult.additional_changes?.length ??
                                   0) === 0 ? (
                                   <p style={{ margin: "8px 0 0", color: "#64748b" }}>
-                                    No other classes needed to move.
+                                    No additional timetable fields needed to change.
                                   </p>
                                 ) : (
                                   mixedRecoveryResult.additional_changes!.map(
@@ -2909,6 +3168,18 @@ function getAdditionalChangeSessionLabel(
                                     ),
                                   )
                                 )}
+
+                                <p
+                                  style={{
+                                    margin: "10px 0 0",
+                                    fontSize: "13px",
+                                    color: "#64748b",
+                                  }}
+                                >
+                                  Time and room changes are counted separately,
+                                  so one class can contribute two perturbations
+                                  if both fields change.
+                                </p>
                               </div>
 
                               {/* ACTUAL RELAXATIONS USED */}
@@ -2994,11 +3265,532 @@ function getAdditionalChangeSessionLabel(
                                 Only relaxations actually used by the final
                                 solution are shown above.
                               </p>
+                            {mixedRecoveryResult.impact && (
+                              <div
+                                style={{
+                                  marginTop: "16px",
+                                  padding: "14px",
+                                  border: "1px solid #d9e0ea",
+                                  borderRadius: "10px",
+                                  background: "#f8fafc",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  gap: "16px",
+                                }}
+                              >
+                                <div>
+                                  <strong>Timetable impact</strong>
+                                  <p
+                                    style={{
+                                      margin: "4px 0 0",
+                                      fontSize: "13px",
+                                      color: "#64748b",
+                                    }}
+                                  >
+                                    {mixedRecoveryResult.perturbation_count ?? 0}{" "}
+                                    {(mixedRecoveryResult.perturbation_count ?? 0) === 1
+                                      ? "perturbation"
+                                      : "perturbations"}{" "}
+                                    · {mixedRecoveryResult.relaxation_count ?? 0}{" "}
+                                    {(mixedRecoveryResult.relaxation_count ?? 0) === 1
+                                      ? "constraint relaxation"
+                                      : "constraint relaxations"}
+                                  </p>
+                                </div>
+
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "10px",
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    className="find-rearrangements-button"
+                                    onClick={() =>
+                                      setSelectedPerturbationImpact(
+                                        mixedRecoveryResult.impact!,
+                                      )
+                                    }
+                                    style={{ width: "auto" }}
+                                  >
+                                    View impact
+                                    <ArrowRight size={16} />
+                                  </button>
+
+                                  {storeButton({
+                                    key: `mixed:${mixedRecoveryResult.session_id ?? mixedRecoveryRequest.session_id}:${mixedRecoveryResult.day ?? ""}:${mixedRecoveryResult.time ?? ""}:${mixedRecoveryResult.room_id ?? ""}:${mixedRecoveryResult.lecturer_id ?? ""}:${mixedRecoveryResult.perturbation_count ?? 0}:${mixedRecoveryResult.relaxation_count ?? 0}`,
+                                    source: "mixed",
+                                    label: "Mixed recovery solution",
+                                    session_id: mixedRecoveryResult.session_id ?? mixedRecoveryRequest.session_id,
+                                    day: mixedRecoveryResult.day,
+                                    time: mixedRecoveryResult.time,
+                                    room_id: mixedRecoveryResult.room_id,
+                                    lecturer_id: mixedRecoveryResult.lecturer_id,
+                                    objective_score: mixedRecoveryResult.objective_score,
+                                    additional_changes: mixedRecoveryResult.additional_changes ?? [],
+                                    relaxations: mixedRecoveryResult.used_relaxations ?? [],
+                                    impact: mixedRecoveryResult.impact,
+                                  }, true)}
+                                </div>
+                              </div>
+                            )}
                             </div>
                           )}
+
+                              </>
+                            )}
                             </div>
+
+                            {/* MIXED RECOVERY CONFIGURATION — independently foldable */}
+                            <div
+                              style={{
+                                marginTop: "28px",
+                                padding: "18px",
+                                border: "1px solid #d9e0ea",
+                                borderRadius: "12px",
+                                background: "#f8fafc",
+                              }}
+                            >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: "16px",
+                                padding: "12px 0",
+                                borderTop: "1px solid #d9e0ea",
+                                borderBottom: mixedConfigurationMinimized ? 0 : "1px solid #d9e0ea",
+                                marginTop: "6px",
+                                marginBottom: mixedConfigurationMinimized ? 0 : "18px",
+                              }}
+                            >
+                              <div>
+                                <div style={{ fontSize: "12px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                                  Configuration
+                                </div>
+                                <strong style={{ display: "block", marginTop: "3px" }}>Recovery configuration</strong>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setMixedConfigurationMinimized((value) => !value)}
+                                aria-expanded={!mixedConfigurationMinimized}
+                                title={mixedConfigurationMinimized ? "Expand configuration" : "Collapse configuration"}
+                                aria-label={mixedConfigurationMinimized ? "Expand recovery configuration" : "Collapse recovery configuration"}
+                                style={{ width: "32px", height: "32px", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, border: "1px solid #dbe3ee", borderRadius: "999px", background: "#ffffff", color: "#475569", cursor: "pointer", flexShrink: 0 }}
+                              >
+                                {mixedConfigurationMinimized ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+                              </button>
+                            </div>
+
+                            {!mixedConfigurationMinimized && (
+                              <>
+                        {/* PERTURBATION LIMIT */}
+
+                        <div>
+                          <div
+                            style={{
+                              fontSize: "12px",
+                              fontWeight: 700,
+                              color: "#64748b",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                            }}
+                          >
+                            Perturbation limit
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: "12px",
+                              fontWeight: 600,
+                            }}
+                          >
+                            Maximum additional perturbations
+                          </div>
+
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "10px",
+                              marginTop: "10px",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setMixedPerturbationLimit((value) =>
+                                  Math.max(0, value - 1)
+                                )
+                              }
+                            >
+                              −
+                            </button>
+
+                            <strong
+                              style={{
+                                minWidth: "32px",
+                                textAlign: "center",
+                              }}
+                            >
+                              {mixedPerturbationLimit}
+                            </strong>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setMixedPerturbationLimit((value) => value + 1)
+                              }
+                            >
+                              +
+                            </button>
+                          </div>
+
+                          <p
+                            style={{
+                              margin: "10px 0 0",
+                              fontSize: "13px",
+                              color: "#64748b",
+                              maxWidth: "620px",
+                            }}
+                          >
+                            Choose how much timetable disruption the solver may
+                            use to preserve more constraints. A time change and
+                            a room change each count as one perturbation. The
+                            solver may use fewer than this maximum.
+                          </p>
+                        </div>
+
+                        <div
+                          style={{
+                            margin: "22px 0",
+                            borderTop: "1px solid #d9e0ea",
+                          }}
+                        />
+
+                        {/* CONSTRAINT RELAXATIONS */}
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+                            gap: "32px",
+                            alignItems: "start",
+                          }}
+                        >
+                          {/* LEFT — CONSTRAINT PICKER */}
+                          <div>
+                            <div style={{ fontSize: "12px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                              CONSTRAINTS TO KEEP ENFORCED
+                            </div>
+                            <p style={{ margin: "6px 0 0", color: "#64748b" }}>Protect whole groups or choose individual stakeholders and days.</p>
+                            <div style={{ marginTop: "12px" }}>
+                              <button type="button" onClick={() => setProtectedConstraintsOpen((open) => !open)} aria-expanded={protectedConstraintsOpen}
+                                style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", background: "#ffffff", border: "1px solid #d9e0ea", borderRadius: "8px", cursor: "pointer" }}>
+                                <span><strong>{protectedConstraintIds.length}</strong> of {allRelaxableConstraints.length} protected</span>
+                                {protectedConstraintsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                              </button>
+                              {protectedConstraintsOpen && (
+                                <div style={{ marginTop: "8px", background: "#ffffff", border: "1px solid #d9e0ea", borderRadius: "10px", overflow: "hidden" }}>
+                                  <div style={{ padding: "12px", borderBottom: "1px solid #e5e7eb", background: "#f8fafc" }}>
+                                    <input type="search" value={constraintSearch} onChange={(event) => setConstraintSearch(event.target.value)} placeholder="Search constraints or stakeholders…" aria-label="Search protected constraints"
+                                      style={{ width: "100%", boxSizing: "border-box", padding: "9px 11px", border: "1px solid #cbd5e1", borderRadius: "8px", background: "#ffffff", outline: "none", fontSize: "13px" }} />
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginTop: "9px", fontSize: "12px", color: "#64748b" }}>
+                                      <span>{constraintSearch ? `${groupedConstraintPicker.reduce((total, group) => total + group.constraints.length, 0)} matching constraints` : `${allRelaxableConstraints.length} relaxable constraints`}</span>
+                                      {protectedConstraintIds.length > 0 && <button type="button" onClick={() => setConstraintsProtected(allRelaxableConstraints, false)} style={{ padding: 0, border: 0, background: "transparent", color: "#475569", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>Clear all</button>}
+                                    </div>
+                                  </div>
+                                  <div style={{ maxHeight: "390px", overflowY: "auto", padding: "6px" }}>
+                                    {groupedConstraintPicker.length === 0 ? <div style={{ padding: "24px 14px", textAlign: "center", color: "#64748b", fontSize: "13px" }}>No constraints match “{constraintSearch}”.</div> : groupedConstraintPicker.map((typeGroup) => {
+                                      const typeProtected = getProtectedCount(typeGroup.constraints);
+                                      return <div key={typeGroup.type} style={{ marginBottom: "8px", border: "1px solid #e2e8f0", borderRadius: "9px", overflow: "hidden" }}>
+                                        <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 11px", background: "#f8fafc" }}>
+                                          <input type="checkbox" ref={(element) => setIndeterminate(element, typeProtected, typeGroup.constraints.length)} checked={typeGroup.constraints.length > 0 && typeProtected === typeGroup.constraints.length} onChange={(event) => setConstraintsProtected(typeGroup.constraints, event.target.checked)} aria-label={`Protect all ${typeGroup.label}`} />
+                                          <strong style={{ flex: 1, fontSize: "13px", color: "#1e293b" }}>{typeGroup.label}</strong><span style={{ fontSize: "11px", color: "#64748b" }}>{typeProtected} / {typeGroup.constraints.length}</span>
+                                        </div>
+                                        <div style={{ padding: "5px" }}>{typeGroup.constraintGroups.map((constraintGroup) => {
+                                          const protectedCount=getProtectedCount(constraintGroup.constraints); const open=expandedConstraintTypes.includes(constraintGroup.key)||constraintSearch.trim().length>0;
+                                          return <div key={constraintGroup.key} style={{ borderBottom: "1px solid #eef2f7" }}>
+                                            <div style={{ display: "flex", alignItems: "center", gap: "9px", padding: "9px 7px" }}>
+                                              <input type="checkbox" ref={(element)=>setIndeterminate(element,protectedCount,constraintGroup.constraints.length)} checked={constraintGroup.constraints.length>0&&protectedCount===constraintGroup.constraints.length} onChange={(event)=>setConstraintsProtected(constraintGroup.constraints,event.target.checked)} aria-label={`Protect all ${constraintGroup.name}`} />
+                                              <button type="button" onClick={()=>toggleConstraintTypeOpen(constraintGroup.key)} style={{ flex:1,minWidth:0,display:"flex",alignItems:"center",justifyContent:"space-between",gap:"10px",padding:0,border:0,background:"transparent",textAlign:"left",cursor:"pointer" }}>
+                                                <span style={{ overflow:"hidden",textOverflow:"ellipsis",fontSize:"13px",fontWeight:600,color:"#1e293b" }}>{constraintGroup.name}</span><span style={{display:"flex",alignItems:"center",gap:"7px",flexShrink:0}}><span style={{fontSize:"11px",color:"#64748b"}}>{protectedCount} / {constraintGroup.constraints.length}</span>{open?<ChevronUp size={14}/>:<ChevronDown size={14}/>}</span>
+                                              </button>
+                                            </div>
+                                            {open && <div style={{ padding:"0 8px 9px 34px" }}>{constraintGroup.stakeholders.map((stakeholder)=>{
+                                              const stakeholderProtected=getProtectedCount(stakeholder.constraints); const dayConstraints=stakeholder.constraints.filter((constraint)=>constraint.day); const nonDayConstraints=stakeholder.constraints.filter((constraint)=>!constraint.day);
+                                              return <div key={stakeholder.key} style={{padding:"9px 0",borderTop:"1px solid #f1f5f9"}}>
+                                                <div style={{display:"flex",alignItems:"center",gap:"9px"}}><input type="checkbox" ref={(element)=>setIndeterminate(element,stakeholderProtected,stakeholder.constraints.length)} checked={stakeholder.constraints.length>0&&stakeholderProtected===stakeholder.constraints.length} onChange={(event)=>setConstraintsProtected(stakeholder.constraints,event.target.checked)} aria-label={`Protect ${stakeholder.name}`}/><span style={{flex:1,minWidth:0,fontSize:"12px",fontWeight:600,color:"#334155"}}>{stakeholder.name}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{stakeholderProtected}/{stakeholder.constraints.length}</span></div>
+                                                {dayConstraints.length>0 && <div style={{display:"flex",flexWrap:"wrap",gap:"6px",marginTop:"8px",marginLeft:"24px"}}>{dayConstraints.map((constraint)=>{ const checked=protectedConstraintIds.includes(getProtectionKey(constraint)); const dayLabel=getPickerDayLabel(constraint.day)??"Day"; return <label key={constraint.instance_id} title={dayLabel} style={{display:"inline-flex",alignItems:"center",gap:"5px",padding:"5px 7px",border:checked?"1px solid #93c5fd":"1px solid #e2e8f0",borderRadius:"6px",background:checked?"#eff6ff":"#ffffff",fontSize:"11px",fontWeight:600,color:checked?"#1d4ed8":"#64748b",cursor:"pointer"}}><input type="checkbox" checked={checked} onChange={(event)=>setConstraintsProtected([constraint],event.target.checked)} style={{width:"12px",height:"12px",margin:0}}/>{dayLabel.slice(0,3)}</label>;})}</div>}
+                                                {nonDayConstraints.map((constraint)=>{const checked=protectedConstraintIds.includes(getProtectionKey(constraint)); return <label key={constraint.instance_id} style={{display:"flex",alignItems:"center",gap:"7px",marginTop:"8px",marginLeft:"24px",fontSize:"11px",color:"#64748b",cursor:"pointer"}}><input type="checkbox" checked={checked} onChange={(event)=>setConstraintsProtected([constraint],event.target.checked)}/>Protect this constraint</label>;})}
+                                              </div>;
+                                            })}</div>}
+                                          </div>;
+                                        })}</div>
+                                      </div>;
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* RIGHT — PROTECTED CONSTRAINTS */}
+                          <div
+                            style={{
+                              border: "1px solid #f3d69a",
+                              borderRadius: "10px",
+                              background: "#fff8e6",
+                              overflow: "hidden",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setProtectedSummaryOpen((open) => !open)
+                              }
+                              aria-expanded={protectedSummaryOpen}
+                              style={{
+                                width: "100%",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: "16px",
+                                padding: "16px",
+                                border: 0,
+                                background: "transparent",
+                                cursor: "pointer",
+                                textAlign: "left",
+                              }}
+                            >
+                              <div>
+                                <div
+                                  style={{
+                                    fontSize: "12px",
+                                    fontWeight: 700,
+                                    color: "#92400e",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.05em",
+                                  }}
+                                >
+                                  Constraints protected
+                                </div>
+
+                                <div
+                                  style={{
+                                    marginTop: "5px",
+                                    fontSize: "14px",
+                                    fontWeight: 600,
+                                    color: "#1e293b",
+                                  }}
+                                >
+                                  {selectedProtectedConstraints.length} selected
+                                </div>
+                              </div>
+
+                              {protectedSummaryOpen ? (
+                                <ChevronUp size={18} aria-hidden="true" />
+                              ) : (
+                                <ChevronDown size={18} aria-hidden="true" />
+                              )}
+                            </button>
+
+                            {protectedSummaryOpen && (
+                              <div
+                                style={{
+                                  padding: "0 16px 16px",
+                                  borderTop: "1px solid #f3d69a",
+                                }}
+                              >
+                                {selectedProtectedConstraints.length === 0 ? (
+                                  <p
+                                    style={{
+                                      margin: "14px 0 0",
+                                      fontSize: "13px",
+                                      color: "#64748b",
+                                    }}
+                                  >
+                                    No constraints are protected. The solver may relax any
+                                    relaxable constraint if needed.
+                                  </p>
+                                ) : (
+                                  <>
+                                    <p
+                                      style={{
+                                        margin: "14px 0",
+                                        fontSize: "13px",
+                                        color: "#64748b",
+                                      }}
+                                    >
+                                      These constraints must remain enforced.
+                                    </p>
+
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        gap: "8px",
+                                      }}
+                                    >
+                                      {groupedProtectedConstraints.map(
+                                        (constraintGroup) => (
+                                          <details
+                                            key={constraintGroup.id}
+                                            style={{
+                                              background: "rgba(255, 255, 255, 0.45)",
+                                              border: "1px solid #f3d69a",
+                                              borderRadius: "8px",
+                                              overflow: "hidden",
+                                            }}
+                                          >
+                                            <summary
+                                              style={{
+                                                display: "flex",
+                                                alignItems: "center",
+                                                justifyContent: "space-between",
+                                                gap: "12px",
+                                                padding: "10px 12px",
+                                                cursor: "pointer",
+                                                fontSize: "13px",
+                                                fontWeight: 600,
+                                                color: "#1e293b",
+                                              }}
+                                            >
+                                              <span>{constraintGroup.name}</span>
+                                              <span
+                                                style={{
+                                                  flexShrink: 0,
+                                                  fontSize: "12px",
+                                                  fontWeight: 600,
+                                                  color: "#92400e",
+                                                }}
+                                              >
+                                                {constraintGroup.count}
+                                              </span>
+                                            </summary>
+
+                                            <div style={{ padding: "0 12px 10px" }}>
+                                              {constraintGroup.stakeholders.map(
+                                                (stakeholder, index) => (
+                                                  <div
+                                                    key={stakeholder.key}
+                                                    style={{
+                                                      padding: "9px 0",
+                                                      borderTop:
+                                                        index === 0
+                                                          ? "1px solid #f3d69a"
+                                                          : "1px solid rgba(243, 214, 154, 0.65)",
+                                                    }}
+                                                  >
+                                                    <div
+                                                      style={{
+                                                        display: "flex",
+                                                        alignItems: "center",
+                                                        justifyContent: "space-between",
+                                                        gap: "12px",
+                                                      }}
+                                                    >
+                                                      <strong
+                                                        style={{
+                                                          fontSize: "13px",
+                                                          color: "#334155",
+                                                        }}
+                                                      >
+                                                        {stakeholder.name}
+                                                      </strong>
+
+                                                      <span
+                                                        style={{
+                                                          fontSize: "11px",
+                                                          color: "#94a3b8",
+                                                        }}
+                                                      >
+                                                        {stakeholder.count}
+                                                      </span>
+                                                    </div>
+
+                                                    {stakeholder.days.length > 0 && (
+                                                      <div
+                                                        style={{
+                                                          marginTop: "4px",
+                                                          fontSize: "12px",
+                                                          color: "#64748b",
+                                                        }}
+                                                      >
+                                                        {stakeholder.days.join(" · ")}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                ),
+                                              )}
+                                            </div>
+                                          </details>
+                                        ),
+                                      )}
+                                    </div>
+
+                                    <div
+                                      style={{
+                                        marginTop: "12px",
+                                        padding: "10px 12px",
+                                        borderRadius: "8px",
+                                        background: "#fffbeb",
+                                        fontSize: "12px",
+                                        color: "#78350f",
+                                      }}
+                                    >
+                                      Protected constraints remain enforced. Unselected
+                                      constraints may be relaxed if needed.
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                          <div
+                            style={{
+                              marginTop: "18px",
+                              display: "flex",
+                              justifyContent: "flex-end",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              className="find-rearrangements-button"
+                              disabled={
+                                mixedRecoveryLoading ||
+                                !canMixedRecovery
+                              }
+                              onClick={findMixedRecoverySolution}
+                            >
+                              {mixedRecoveryLoading
+                                ? "Calculating best solution…"
+                                : "Find best solution"}
+                              {mixedRecoveryLoading ? (
+                                <RefreshCw
+                                  size={16}
+                                  aria-hidden="true"
+                                  style={{ animation: "step4SolverSpin 0.8s linear infinite" }}
+                                />
+                              ) : (
+                                <ArrowRight size={16} />
+                              )}
+                            </button>
+                          </div>
+                              </>
+                            )}
+                            </div>
+
                           </>
                         )}
+                      </div>
+                    </>
+                  )}
                   <div
                     style={{
                       marginTop: "16px",

@@ -5,7 +5,8 @@ import { MiniTimetablePreview } from "../components/MiniTimetablePreview";
 import { InteractiveRepair } from "../components/InteractiveRepair.tsx";
 import { ObjectivesPanel } from "../components/objectives/ObjectivesPanel";
 import { ConstraintsOverviewPanel } from "../components/constraints/ConstraintsOverviewPanel";
-import { Step4Solution, type TemporaryConstraintDeactivation, } from "../components/solution/Step4Solution.tsx";
+import { Step4Solution, type TemporaryConstraintDeactivation, type StoredSolutionCandidate, } from "../components/solution/Step4Solution.tsx";
+import { CompareSolutionsModal } from "../components/solution/CompareSolutionsModal";
 import { sessionToSlotIds, getBusySlots, } from "../data/timetableData";
 import { useTimetableData } from "../hooks/useTimetableData";
 import { api } from "../../../shared/api/client";
@@ -418,6 +419,9 @@ export function ReschedulePage() {
   const [solverResult, setSolverResult] = useState<RescheduleResponse | null>(null);
   const [perturbationAlternatives, setPerturbationAlternatives] = useState<PerturbationAlternativesResponse | null>(null);
   const [solverLoading, setSolverLoading] = useState(false);
+  // Keep perturbation refreshes local to the rearrangement request so Step 4
+  // stays mounted instead of switching to the page-level solver loading view.
+  const [rearrangementLoading, setRearrangementLoading] = useState(false);
   const [solverError, setSolverError] = useState<string | null>(null);
 
   const [
@@ -427,11 +431,64 @@ export function ReschedulePage() {
   const [
     analyticalExplorationOpen,
     setAnalyticalExplorationOpen,
-  ] = useState(true);
+  ] = useState(false);
   const [
     appliedTemporaryDeactivations,
     setAppliedTemporaryDeactivations,
   ] = useState<TemporaryConstraintDeactivation[]>([]);
+
+  // Candidate solutions remain available while the user moves backwards through
+  // the wizard and tries another request/recovery path.
+  const [storedSolutions, setStoredSolutions] = useState<StoredSolutionCandidate[]>([]);
+  const [compareSolutionsOpen, setCompareSolutionsOpen] = useState(false);
+
+  // When a shortlisted solution is chosen, keep the complete candidate so its
+  // impact data can be persisted when the user saves the solution.
+  const [activeStoredSolution, setActiveStoredSolution] =
+    useState<StoredSolutionCandidate | null>(null);
+
+  function storeSolution(candidate: StoredSolutionCandidate) {
+    setStoredSolutions((current) =>
+      current.some((item) => item.key === candidate.key)
+        ? current
+        : [...current, candidate],
+    );
+  }
+
+  function removeStoredSolution(key: string) {
+    setStoredSolutions((current) => current.filter((item) => item.key !== key));
+  }
+
+  function chooseStoredSolution(candidate: StoredSolutionCandidate) {
+    if (!selectedEvent || !data) return;
+
+    const originalStart = new Date(selectedEvent.session.start);
+    const fallbackDay = originalStart.toLocaleDateString("en-US", { weekday: "long" });
+    const fallbackTime = originalStart.toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const fallbackRoomId =
+      data.rooms.find((room) => room.name === selectedEvent.session.room)?.id ??
+      selectedEvent.session.room;
+
+    setSolverResult({
+      status: "feasible",
+      reason: null,
+      session_id: candidate.session_id,
+      day: candidate.day ?? fallbackDay,
+      time: candidate.time ?? fallbackTime,
+      room_id: candidate.room_id ?? fallbackRoomId,
+      lecturer_id: candidate.lecturer_id ?? selectedEvent.session.lecturerId,
+      additional_changes: candidate.additional_changes,
+      objective_score: candidate.objective_score ?? null,
+    });
+    setAppliedTemporaryDeactivations(candidate.relaxations);
+    setActiveStoredSolution(candidate);
+    setCompareSolutionsOpen(false);
+    goToStep(4);
+  }
 
   const [originalModes, setOriginalModes] = useState<{
     time: "keep" | "specific" | "find";
@@ -1395,6 +1452,7 @@ export function ReschedulePage() {
     setSolverLoading(true);
     setSolverError(null);
     setAppliedTemporaryDeactivations([]);
+    setActiveStoredSolution(null);
     setSolverResult(null);
     setPerturbationAlternatives(null);
     setDiagResult(null);
@@ -1430,6 +1488,7 @@ export function ReschedulePage() {
 
     setSolverLoading(true);
     setSolverError(null);
+    setActiveStoredSolution(null);
 
     try {
       let request: RescheduleRequest;
@@ -1551,11 +1610,12 @@ export function ReschedulePage() {
   }
 
 async function runRescheduleWithAdditionalChanges() {
-  if (!selectedEvent) return;
+  if (!selectedEvent || rearrangementLoading) return;
 
-  setSolverLoading(true);
+  setRearrangementLoading(true);
   setSolverError(null);
   setAppliedTemporaryDeactivations([]);
+  setActiveStoredSolution(null);
 
   try {
     let request: RescheduleRequest;
@@ -1686,7 +1746,7 @@ async function runRescheduleWithAdditionalChanges() {
         : "Failed to find a minimum-perturbation recovery",
     );
   } finally {
-    setSolverLoading(false);
+    setRearrangementLoading(false);
   }
 }
 
@@ -2198,7 +2258,13 @@ async function runRescheduleWithAdditionalChanges() {
         resulting_timetable: resultingTimetable,
 
         affected_stakeholders: affectedStakeholderList,
-        stakeholder_impacts: [],
+
+        // Persist the same full impact object used by Step 4's View impacts
+        // and Compare impacts UI. The API field is an array, so a selected
+        // shortlisted solution contributes one complete impact snapshot.
+        stakeholder_impacts: activeStoredSolution?.impact
+          ? [activeStoredSolution.impact]
+          : [],
 
         objectives: objectivesApplicable
           ? objectives.map((objective) => ({
@@ -2313,6 +2379,92 @@ async function runRescheduleWithAdditionalChanges() {
               </button>
             );
           })}
+
+          <div className="reschedule-sidebar-divider" />
+
+          <section
+            aria-label="Stored solutions"
+            style={{
+              padding: "0 4px 4px",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "10px",
+                marginBottom: "10px",
+              }}
+            >
+              <strong style={{ fontSize: "13px" }}>Shortlist</strong>
+              <span style={{ fontSize: "12px", color: "#64748b" }}>
+                {storedSolutions.length}
+              </span>
+            </div>
+
+            {storedSolutions.length === 0 ? (
+              <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8", lineHeight: 1.45 }}>
+                Store feasible solutions here while you explore alternatives.
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {storedSolutions.map((solution) => (
+                  <div
+                    key={solution.key}
+                    style={{
+                      padding: "10px",
+                      border: "1px solid #dbe3ef",
+                      borderRadius: "8px",
+                      background: "#ffffff",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: "12px", fontWeight: 700, color: "#334155" }}>
+                          {solution.label}
+                        </div>
+                        <div style={{ marginTop: "3px", fontSize: "11px", color: "#64748b" }}>
+                          {solution.day ? `${formatDay(solution.day)} ${solution.time ?? ""}` : "Requested placement"}
+                        </div>
+                        <div style={{ marginTop: "3px", fontSize: "11px", color: "#64748b" }}>
+                          {solution.additional_changes.length} changes · {solution.relaxations.length} relaxations
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeStoredSolution(solution.key)}
+                        aria-label={`Remove ${solution.label} from shortlist`}
+                        title="Remove from shortlist"
+                        style={{
+                          alignSelf: "flex-start",
+                          border: 0,
+                          background: "transparent",
+                          color: "#64748b",
+                          cursor: "pointer",
+                          fontSize: "18px",
+                          lineHeight: 1,
+                          padding: "0 2px",
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {storedSolutions.length > 0 && (
+              <button
+                type="button"
+                className="shortlist-compare-button"
+                onClick={() => setCompareSolutionsOpen(true)}
+              >
+                Compare and choose
+              </button>
+            )}
+          </section>
         </aside>
 
         <main className="reschedule-card">
@@ -2756,108 +2908,106 @@ async function runRescheduleWithAdditionalChanges() {
               onRetryWithRelaxations={runRescheduleWithRelaxations}
               onFindRearrangements={runRescheduleWithAdditionalChanges}
               appliedTemporaryDeactivations={appliedTemporaryDeactivations}
+              onStoreSolution={storeSolution}
+              storedSolutionKeys={storedSolutions.map((solution) => solution.key)}
             />
 
             {solverResult?.status === "infeasible" && (
-              <section
-                aria-labelledby="analytical-exploration-heading"
-                style={{
-                  marginTop: "20px",
-                  border: "1px solid #dbe3ef",
-                  borderRadius: "12px",
-                  background: "#f8fafc",
-                  overflow: "hidden",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() =>
-                    setAnalyticalExplorationOpen((open) => !open)
-                  }
-                  aria-expanded={analyticalExplorationOpen}
-                  aria-controls="analytical-exploration-content"
+              <div style={{ marginTop: "20px" }}>
+                <label
                   style={{
-                    width: "100%",
-                    padding: "18px 20px",
-                    border: 0,
-                    background: "transparent",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "10px",
                     cursor: "pointer",
-                    textAlign: "left",
-                    display: "flex",
-                    alignItems: "flex-start",
-                    justifyContent: "space-between",
-                    gap: "20px",
+                    color: "#475569",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    userSelect: "none",
                   }}
                 >
-                  <div style={{ maxWidth: "720px" }}>
-                    <div
-                      style={{
-                        marginBottom: "5px",
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        letterSpacing: "0.08em",
-                        textTransform: "uppercase",
-                        color: "#475569",
-                      }}
-                    >
-                      Analytical exploration
-                    </div>
-
-                    <h3
-                      id="analytical-exploration-heading"
-                      style={{
-                        margin: 0,
-                        fontSize: "18px",
-                      }}
-                    >
-                      Investigate the repair path
-                    </h3>
-                  </div>
-
-                  {analyticalExplorationOpen ? (
-                    <ChevronUp size={20} aria-hidden="true" />
-                  ) : (
-                    <ChevronDown size={20} aria-hidden="true" />
-                  )}
-                </button>
+                  <input
+                    type="checkbox"
+                    checked={analyticalExplorationOpen}
+                    onChange={(event) =>
+                      setAnalyticalExplorationOpen(event.target.checked)
+                    }
+                    aria-controls="analytical-exploration-content"
+                    style={{
+                      width: "16px",
+                      height: "16px",
+                      cursor: "pointer",
+                    }}
+                  />
+                  Show analytical exploration
+                </label>
 
                 {analyticalExplorationOpen && (
-                  <div
+                  <section
                     id="analytical-exploration-content"
+                    aria-labelledby="analytical-exploration-heading"
                     style={{
-                      padding: "0 20px 18px",
-                      display: "flex",
-                      alignItems: "flex-end",
-                      justifyContent: "space-between",
-                      gap: "20px",
-                      flexWrap: "wrap",
+                      marginTop: "12px",
+                      border: "1px solid #dbe3ef",
+                      borderRadius: "12px",
+                      background: "#f8fafc",
+                      padding: "18px 20px",
                     }}
                   >
-                    <p
+                    <div
                       style={{
-                        margin: 0,
-                        maxWidth: "720px",
-                        color: "#64748b",
-                        lineHeight: 1.55,
+                        display: "flex",
+                        alignItems: "flex-end",
+                        justifyContent: "space-between",
+                        gap: "20px",
+                        flexWrap: "wrap",
                       }}
                     >
-                      Explore why this request remains infeasible. Move
-                      contributing classes or relax constraints and observe
-                      which conflicts each decision resolves or introduces.
-                    </p>
+                      <div style={{ maxWidth: "720px" }}>
+                        <div
+                          style={{
+                            marginBottom: "5px",
+                            fontSize: "11px",
+                            fontWeight: 700,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            color: "#475569",
+                          }}
+                        >
+                          Analytical exploration
+                        </div>
 
-                    <button
-                      type="button"
-                      className="primary-button"
-                      onClick={() =>
-                        setShowAnalyticalExploration(true)
-                      }
-                    >
-                      Open analytical exploration
-                    </button>
-                  </div>
+                        <h3
+                          id="analytical-exploration-heading"
+                          style={{ margin: 0, fontSize: "18px" }}
+                        >
+                          Investigate the repair path
+                        </h3>
+
+                        <p
+                          style={{
+                            margin: "14px 0 0",
+                            color: "#64748b",
+                            lineHeight: 1.55,
+                          }}
+                        >
+                          Explore why this request remains infeasible. Move
+                          contributing classes or relax constraints and observe
+                          which conflicts each decision resolves or introduces.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => setShowAnalyticalExploration(true)}
+                      >
+                        Open analytical exploration
+                      </button>
+                    </div>
+                  </section>
                 )}
-              </section>
+              </div>
             )}
              </>
           )}
@@ -2877,9 +3027,54 @@ async function runRescheduleWithAdditionalChanges() {
               <button
                 className="primary-button"
                 onClick={handleContinue}
-                disabled={step === 1 && stepOneInvalid}
+                disabled={(step === 1 && stepOneInvalid) || solverLoading}
+                aria-busy={step === 3 && solverLoading}
               >
-                Continue
+                {step === 3 && solverLoading ? (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "8px",
+                    }}
+                  >
+                    Calculating solution...
+                    <svg
+                      width="15"
+                      height="15"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                      aria-hidden="true"
+                    >
+                      <circle
+                        cx="12"
+                        cy="12"
+                        r="9"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        opacity="0.28"
+                      />
+                      <path
+                        d="M21 12a9 9 0 0 0-9-9"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        strokeLinecap="round"
+                      >
+                        <animateTransform
+                          attributeName="transform"
+                          type="rotate"
+                          from="0 12 12"
+                          to="360 12 12"
+                          dur="0.8s"
+                          repeatCount="indefinite"
+                        />
+                      </path>
+                    </svg>
+                  </span>
+                ) : (
+                  "Continue"
+                )}
               </button>
             )}
 
@@ -2895,6 +3090,22 @@ async function runRescheduleWithAdditionalChanges() {
           </div>
         </main>
       </div>
+
+      <CompareSolutionsModal
+        open={compareSolutionsOpen}
+        solutions={storedSolutions}
+        originalDay={new Date(selectedEvent.session.start).toLocaleDateString("en-US", { weekday: "long" })}
+        originalTime={new Date(selectedEvent.session.start).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })}
+        originalRoomId={data!.rooms.find((room) => room.name === selectedEvent.session.room)?.id ?? selectedEvent.session.room}
+        originalLecturerId={selectedEvent.session.lecturerId}
+        getSessionLabel={getSessionLabel}
+        getRoomName={getRoomName}
+        getLecturerName={getLecturerName}
+        getCohortName={getCohortName}
+        getConstraintName={(constraintId) => constraintDefinitions.find((item) => item.id === constraintId)?.name ?? constraintId}
+        onClose={() => setCompareSolutionsOpen(false)}
+        onChoose={chooseStoredSolution}
+      />
 
       {showAnalyticalExploration &&
         solverResult?.status === "infeasible" && (

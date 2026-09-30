@@ -1,12 +1,12 @@
 """Find up to three distinct perturbation-only recovery alternatives.
 
 Ranking is lexicographic:
-1. Keep the number of OTHER sessions touched at the true minimum.
+1. Keep the number of OTHER time/room changes at the true minimum.
 2. Among those minimum-disruption recoveries, use the user's existing
    weighted timetable objective to rank the best remaining alternatives.
 
-The target session is never counted as a perturbation. One other session
-counts as one perturbation even when both its time and room change.
+The target session is never counted as a perturbation. For every OTHER session,
+a time change counts as one perturbation and a room change counts as one perturbation.
 """
 
 from __future__ import annotations
@@ -20,6 +20,9 @@ from app.models import Session
 from app.solver.reschedule import (
     build_pre_solve_context,
     build_solver_model,
+    build_min_perturbation_solver_model,
+    get_existing_breakable_violations,
+    build_baseline_violation_context,
     datetime_to_slot,
     get_duration_slots,
     get_valid_start_slots,
@@ -43,40 +46,45 @@ from app.solver.timetable_impact import (
 )
 
 
-def _add_session_changed_vars(
-    model: cp_model.CpModel,
+def _add_perturbation_vars(
+    model,
     other_sessions,
     start_vars,
     room_vars,
     room_id_to_index,
 ):
-    """Create one changed Boolean per OTHER session."""
-    session_changed_vars = {}
+    time_changed_vars = {}
+    room_changed_vars = {}
 
     for session in other_sessions:
         sid = session.id
+
         original_start = datetime_to_slot(session.start)
         original_room = room_id_to_index[session.room_id]
 
-        time_changed = model.NewBoolVar(f"alt_time_changed_{sid}")
-        room_changed = model.NewBoolVar(f"alt_room_changed_{sid}")
-        session_changed = model.NewBoolVar(f"alt_session_changed_{sid}")
+        time_changed = model.NewBoolVar(f"time_changed_{sid}")
+        room_changed = model.NewBoolVar(f"room_changed_{sid}")
 
-        model.Add(start_vars[sid] != original_start).OnlyEnforceIf(time_changed)
-        model.Add(start_vars[sid] == original_start).OnlyEnforceIf(time_changed.Not())
+        model.Add(
+            start_vars[sid] != original_start
+        ).OnlyEnforceIf(time_changed)
 
-        model.Add(room_vars[sid] != original_room).OnlyEnforceIf(room_changed)
-        model.Add(room_vars[sid] == original_room).OnlyEnforceIf(room_changed.Not())
+        model.Add(
+            start_vars[sid] == original_start
+        ).OnlyEnforceIf(time_changed.Not())
 
-        # session_changed <=> time_changed OR room_changed
-        model.AddBoolOr([time_changed, room_changed]).OnlyEnforceIf(session_changed)
-        model.AddBoolAnd([time_changed.Not(), room_changed.Not()]).OnlyEnforceIf(
-            session_changed.Not()
-        )
+        model.Add(
+            room_vars[sid] != original_room
+        ).OnlyEnforceIf(room_changed)
 
-        session_changed_vars[sid] = session_changed
+        model.Add(
+            room_vars[sid] == original_room
+        ).OnlyEnforceIf(room_changed.Not())
 
-    return session_changed_vars
+        time_changed_vars[sid] = time_changed
+        room_changed_vars[sid] = room_changed
+
+    return time_changed_vars, room_changed_vars
 
 
 def _add_no_good_constraint(
@@ -319,7 +327,8 @@ def _extract_solution(
     index_to_room_id,
     index_to_lecturer_id,
     room_id_to_index,
-    session_changed_vars,
+    time_changed_vars,
+    room_changed_vars,
     objective_debug_vars,
     request: RescheduleRequestIn,
 ):
@@ -332,7 +341,10 @@ def _extract_solution(
     for session in other_sessions:
         sid = session.id
 
-        if solver.Value(session_changed_vars[sid]) == 0:
+        time_changed = solver.Value(time_changed_vars[sid]) == 1
+        room_changed = solver.Value(room_changed_vars[sid]) == 1
+
+        if not time_changed and not room_changed:
             continue
 
         solved_start = solver.Value(start_vars[sid])
@@ -344,14 +356,14 @@ def _extract_solution(
         additional_changes.append(
             {
                 "session_id": sid,
-                "time_changed": solved_start != original_start,
+                "time_changed": time_changed,
                 "old_start_slot": original_start,
                 "new_start_slot": solved_start,
                 "old_day": session.start.strftime("%A").lower(),
                 "old_time": session.start.strftime("%H:%M"),
                 "new_day": solved_session_time["day"],
                 "new_time": solved_session_time["time"],
-                "room_changed": solved_room_index != original_room_index,
+                "room_changed": room_changed,
                 "old_room_id": session.room_id,
                 "new_room_id": index_to_room_id[solved_room_index],
             }
@@ -374,7 +386,10 @@ def _extract_solution(
             solver.Value(lecturer_vars[target_id])
         ],
         "additional_changes": additional_changes,
-        "perturbation_count": len(additional_changes),
+        "perturbation_count": sum(
+            int(change["time_changed"]) + int(change["room_changed"])
+            for change in additional_changes
+        ),
     }
 
 
@@ -384,7 +399,8 @@ def find_perturbation_alternatives(
     max_solutions: int = 3,
 ):
     """Return up to three distinct minimum-perturbation weighted alternatives."""
-    max_solutions = max(1, min(max_solutions, 3))
+    #max_solutions = max(1, min(max_solutions, 3))
+    max_solutions = 3
 
     # 1. Validate and obtain target/other sessions.
     pre_solve = build_pre_solve_context(request, db)
@@ -403,7 +419,7 @@ def find_perturbation_alternatives(
     other_sessions = pre_solve["other_sessions"]
 
     # 2. Ask the existing perturbation-only solver for the true minimum
-    #    number of OTHER sessions that must be touched.
+    #    number of OTHER time/room changes required.
     minimum_result = solve_reschedule_min_perturbation(request, db)
 
     if minimum_result.get("status") != "feasible":
@@ -438,11 +454,11 @@ def find_perturbation_alternatives(
     # Perturbation-only recovery keeps every active constraint enforced.
     # Do not apply temporary deactivations here.
 
-    # 4. Build your existing weighted model. Its max_additional_changes
-    #    currently counts time and room changes separately, so give it a
-    #    deliberately generous ceiling. We add the correct class-level
-    #    perturbation constraint ourselves below.
-    generous_attribute_limit = max(1, len(other_sessions) * 2)
+    # 4. Build the SAME baseline-aware perturbation model used to establish
+    #    the true minimum. Existing breakable violations are baseline state;
+    #    the alternatives model must not silently require them to be repaired.
+    baseline_violations = get_existing_breakable_violations(db)
+    baseline_context = build_baseline_violation_context(baseline_violations)
 
     (
         model,
@@ -452,38 +468,31 @@ def find_perturbation_alternatives(
         index_to_room_id,
         index_to_lecturer_id,
         room_id_to_index,
-        objective_debug_vars,
-    ) = build_solver_model(
-        target_session,
-        change_plan,
-        other_sessions,
-        rooms,
-        lecturers,
-        unavailability_rows,
-        active_capacity_sessions,
-        active_equipment_sessions,
-        cohort_daily_constraints,
-        lecturer_daily_constraints,
-        lecturer_lunch_constraints,
-        generous_attribute_limit,
-        request.objective_weights,
+        time_changed_vars,
+        room_changed_vars,
+    ) = build_min_perturbation_solver_model(
+        target_session=target_session,
+        change_plan=change_plan,
+        other_sessions=other_sessions,
+        rooms=rooms,
+        lecturers=lecturers,
+        unavailability_rows=unavailability_rows,
+        active_capacity_sessions=active_capacity_sessions,
+        active_equipment_sessions=active_equipment_sessions,
+        cohort_daily_constraints=cohort_daily_constraints,
+        lecturer_daily_constraints=lecturer_daily_constraints,
+        lecturer_lunch_constraints=lecturer_lunch_constraints,
+        baseline_context=baseline_context,
     )
 
-    session_changed_vars = _add_session_changed_vars(
-        model,
-        other_sessions,
-        start_vars,
-        room_vars,
-        room_id_to_index,
-    )
-
-    # Every alternative must use exactly the minimum number of affected
-    # OTHER classes. This prevents a nicer weighted score from causing extra
-    # disruption.
-    if session_changed_vars:
-        model.Add(
-            sum(session_changed_vars.values()) == minimum_perturbations
-        )
+    # Every alternative must use exactly the true minimum number of
+    # perturbations. A time change is 1 and a room change is 1.
+    perturbation_vars = [
+        *time_changed_vars.values(),
+        *room_changed_vars.values(),
+    ]
+    if perturbation_vars:
+        model.Add(sum(perturbation_vars) == minimum_perturbations)
     elif minimum_perturbations != 0:
         return {
             "status": "infeasible",
@@ -544,7 +553,8 @@ def find_perturbation_alternatives(
             index_to_room_id=index_to_room_id,
             index_to_lecturer_id=index_to_lecturer_id,
             room_id_to_index=room_id_to_index,
-            session_changed_vars=session_changed_vars,
+            time_changed_vars=time_changed_vars,
+            room_changed_vars=room_changed_vars,
             objective_debug_vars=objective_debug_vars,
             request=request,
         )
@@ -577,6 +587,39 @@ def find_perturbation_alternatives(
 
         solutions.append(solution)
 
+        # ---------------------------------------------------------
+        # DEBUG: show which sessions this solution actually moved
+        # ---------------------------------------------------------
+        # ---------------------------------------------------------
+        # DEBUG: show which sessions this solution actually moved
+        # ---------------------------------------------------------
+        moved_ids = [
+            change["session_id"]
+            for change in solution["additional_changes"]
+        ]
+
+        # ---------------------------------------------------------
+        # DEBUG: show exactly where session-13 and session-16 moved
+        # ---------------------------------------------------------
+        print(f"\n[DEBUG solution {solution_index + 1}]")
+        print(
+            f"score={solution['objective_score']} "
+            f"perturbations={solution['perturbation_count']} "
+            f"objectives={solution['objective_breakdown']}"
+        )
+
+        print("Changed sessions:")
+
+        for change in solution["additional_changes"]:
+            print(
+                f"  {change['session_id']}: "
+                f"time {change['old_day']} {change['old_time']} "
+                f"-> {change['new_day']} {change['new_time']} "
+                f"(changed={change['time_changed']}), "
+                f"room {change['old_room_id']} "
+                f"-> {change['new_room_id']} "
+                f"(changed={change['room_changed']})"
+            )
         _add_no_good_constraint(
             model,
             solution_number=solution_index + 1,

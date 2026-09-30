@@ -99,7 +99,11 @@ def get_valid_start_slots(duration_slots: int):
 
     for day in range(5):
         first_slot = day * SLOTS_PER_DAY + 1
-        latest_start = first_slot + SLOTS_PER_DAY - duration_slots
+        latest_start = (
+                day * SLOTS_PER_DAY
+                + SLOTS_PER_DAY
+                - duration_slots
+        )
 
         for slot in range(first_slot, latest_start + 1):
             valid_slots.append(slot)
@@ -1600,16 +1604,6 @@ def build_solver_model(
 
 # region Solver
 def solve_reschedule(request: RescheduleRequestIn, db):
-    print("\n===== OBJECTIVE WEIGHTS RECEIVED =====")
-    print("Room waste:", request.objective_weights.room_waste)
-    print("Cohort gaps:", request.objective_weights.cohort_gaps)
-    print("Lecturer idle:", request.objective_weights.lecturer_idle)
-    print(
-        "Cohort room changes:",
-        request.objective_weights.cohort_room_changes,
-    )
-    print("======================================\n")
-
     pre_solve = build_pre_solve_context(request, db)
 
     if pre_solve["status"] != "ready":
@@ -1741,11 +1735,8 @@ def solve_reschedule(request: RescheduleRequestIn, db):
             minimum_perturbations = None
 
             if can_perturb:
-                minimum_perturbations = len(
-                    perturbation_result.get(
-                        "additional_changes",
-                        [],
-                    )
+                minimum_perturbations = perturbation_result.get(
+                    "perturbation_count"
                 )
 
             return {
@@ -4376,10 +4367,12 @@ def build_min_perturbation_solver_model(
     # Lecturer frozen.
     # Time / room may move.
     #
-    # One touched session = perturbation cost 1.
+    # Each changed field is one perturbation:
+    # time change = 1, room change = 1.
     # ==============================================================
 
-    session_changed_vars = {}
+    time_changed_vars = {}
+    room_changed_vars = {}
 
     for session in other_sessions:
 
@@ -4419,12 +4412,6 @@ def build_min_perturbation_solver_model(
             )
         )
 
-        session_changed = (
-            model.NewBoolVar(
-                f"min_session_changed_{session_id}"
-            )
-        )
-
         # ----------------------------------------------------------
         # time_changed <=> time != original
         # ----------------------------------------------------------
@@ -4461,28 +4448,8 @@ def build_min_perturbation_solver_model(
             room_changed.Not()
         )
 
-        # ----------------------------------------------------------
-        # session_changed =
-        #     time_changed OR room_changed
-        # ----------------------------------------------------------
-
-        model.AddBoolOr([
-            time_changed,
-            room_changed,
-        ]).OnlyEnforceIf(
-            session_changed
-        )
-
-        model.AddBoolAnd([
-            time_changed.Not(),
-            room_changed.Not(),
-        ]).OnlyEnforceIf(
-            session_changed.Not()
-        )
-
-        session_changed_vars[
-            session_id
-        ] = session_changed
+        time_changed_vars[session_id] = time_changed
+        room_changed_vars[session_id] = room_changed
 
     # ==============================================================
     # Apply requested change to TARGET
@@ -4694,15 +4661,17 @@ def build_min_perturbation_solver_model(
     # ==============================================================
     # OBJECTIVE:
     #
-    # Minimize number of OTHER sessions touched.
+    # Minimize total changed fields across OTHER sessions.
+    # A time change costs 1 and a room change costs 1.
     # ==============================================================
 
-    if session_changed_vars:
-        model.Minimize(
-            sum(
-                session_changed_vars.values()
-            )
-        )
+    perturbation_vars = [
+        *time_changed_vars.values(),
+        *room_changed_vars.values(),
+    ]
+
+    if perturbation_vars:
+        model.Minimize(sum(perturbation_vars))
 
     return (
         model,
@@ -4712,7 +4681,8 @@ def build_min_perturbation_solver_model(
         index_to_room_id,
         index_to_lecturer_id,
         room_id_to_index,
-        session_changed_vars,
+        time_changed_vars,
+        room_changed_vars,
     )
 
 
@@ -4721,8 +4691,8 @@ def solve_reschedule_min_perturbation(
     db,
 ):
     """
-    Reschedule the target session while touching the minimum
-    possible number of other sessions.
+    Reschedule the target session while using the minimum
+    possible number of time/room field perturbations.
 
     Perturbation-only recovery:
     - Other timetable sessions may be moved.
@@ -4827,7 +4797,8 @@ def solve_reschedule_min_perturbation(
         index_to_room_id,
         index_to_lecturer_id,
         room_id_to_index,
-        session_changed_vars,
+        time_changed_vars,
+        room_changed_vars,
     ) = build_min_perturbation_solver_model(
         target_session=target_session,
         change_plan=change_plan,
@@ -4919,9 +4890,14 @@ def solve_reschedule_min_perturbation(
     for session in other_sessions:
         session_id = session.id
 
-        if solver.Value(
-            session_changed_vars[session_id]
-        ) == 0:
+        time_changed = bool(
+            solver.Value(time_changed_vars[session_id])
+        )
+        room_changed = bool(
+            solver.Value(room_changed_vars[session_id])
+        )
+
+        if not time_changed and not room_changed:
             continue
 
         solved_start = solver.Value(
@@ -4947,9 +4923,7 @@ def solve_reschedule_min_perturbation(
         additional_changes.append({
             "session_id": session_id,
 
-            "time_changed": (
-                solved_start != original_start
-            ),
+            "time_changed": time_changed,
 
             "old_start_slot": original_start,
             "new_start_slot": solved_start,
@@ -4968,10 +4942,7 @@ def solve_reschedule_min_perturbation(
             "new_day": solved_session_time["day"],
             "new_time": solved_session_time["time"],
 
-            "room_changed": (
-                solved_room_index
-                != original_room_index
-            ),
+            "room_changed": room_changed,
 
             "old_room_id": session.room_id,
 
@@ -5007,8 +4978,11 @@ def solve_reschedule_min_perturbation(
 
         "additional_changes": additional_changes,
 
-        "perturbation_count": len(
-            additional_changes
+        "perturbation_count": sum(
+            int(change["time_changed"])
+            + int(change["room_changed"])
+            for change in additional_changes
         ),
     }
 # endregion
+

@@ -320,8 +320,8 @@ export function PerturbationImpactContent({
 
           <section style={{ marginTop: 22 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-              <ArrowDown size={18} />
-              <h3 style={{ margin: 0 }}>Improved for</h3>
+              <ArrowDown size={18} color="#15803d" />
+              <h3 style={{ margin: 0, color: "#166534" }}>Improved for</h3>
             </div>
 
             {groupBy === "stakeholder" ? (
@@ -333,6 +333,7 @@ export function PerturbationImpactContent({
 
                   return (
                     <StakeholderGroup
+                      tone="improved"
                       key={`stakeholder-room-waste-${change.id}`}
                       title={getSessionLabel(change.id)}
                     >
@@ -371,6 +372,7 @@ export function PerturbationImpactContent({
 
                 {roomChangeChanges.filter((c) => c.delta < 0).map((change) => (
                   <StakeholderGroup
+                      tone="improved"
                     key={`stakeholder-room-change-${change.id}`}
                     title={getCohortName(change.id)}
                   >
@@ -412,7 +414,7 @@ export function PerturbationImpactContent({
               </>            ) : (
               <>
                 {roomWasteChanges.some((c) => c.delta < 0) && (
-                  <ObjectiveGroup title="Room capacity match">
+                  <ObjectiveGroup tone="improved" title="Room capacity match">
                     {roomWasteChanges.filter((c) => c.delta < 0).map((change) => {
                       const before = change.before_details;
                       const after = change.after_details;
@@ -453,7 +455,7 @@ export function PerturbationImpactContent({
                 )}
 
                 {roomChangeChanges.some((c) => c.delta < 0) && (
-                  <ObjectiveGroup title="Cohort room changes">
+                  <ObjectiveGroup tone="improved" title="Cohort room changes">
                     {roomChangeChanges.filter((c) => c.delta < 0).flatMap((change) =>
                       (change.before_details?.room_changes ?? []).map((rc, index) => (
                         <ObjectiveItem
@@ -497,14 +499,15 @@ export function PerturbationImpactContent({
 
           <section style={{ marginTop: 28 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-              <ArrowUp size={18} />
-              <h3 style={{ margin: 0 }}>Worsened for</h3>
+              <ArrowUp size={18} color="#b91c1c" />
+              <h3 style={{ margin: 0, color: "#991b1b" }}>Worsened for</h3>
             </div>
 
             {groupBy === "stakeholder" ? (
               <>
                 {gapChanges.filter((c) => c.delta > 0).map((change) => (
                   <StakeholderGroup
+                      tone="worsened"
                     key={`stakeholder-gap-${change.id}`}
                     title={getCohortName(change.id)}
                   >
@@ -544,6 +547,7 @@ export function PerturbationImpactContent({
 
                 {idleChanges.filter((c) => c.delta > 0).map((change) => (
                   <StakeholderGroup
+                      tone="worsened"
                     key={`stakeholder-idle-${change.id}`}
                     title={getLecturerName(change.id)}
                   >
@@ -583,7 +587,7 @@ export function PerturbationImpactContent({
               </>            ) : (
               <>
                 {gapChanges.some((c) => c.delta > 0) && (
-                  <ObjectiveGroup title="Cohort timetable gaps">
+                  <ObjectiveGroup tone="worsened" title="Cohort timetable gaps">
                     {gapChanges.filter((c) => c.delta > 0).flatMap((change) =>
                       (change.after_details?.periods ?? []).map((period, index) => (
                         <ObjectiveItem
@@ -621,7 +625,7 @@ export function PerturbationImpactContent({
                 )}
 
                 {idleChanges.some((c) => c.delta > 0) && (
-                  <ObjectiveGroup title="Lecturer idle time">
+                  <ObjectiveGroup tone="worsened" title="Lecturer idle time">
                     {idleChanges.filter((c) => c.delta > 0).flatMap((change) =>
                       (change.after_details?.periods ?? []).map((period, index) => (
                         <ObjectiveItem
@@ -838,14 +842,22 @@ function DetailLine({
 function StakeholderGroup({
   title,
   children,
+  tone = "neutral",
 }: {
   title: string;
   children: React.ReactNode;
+  tone?: "improved" | "worsened" | "neutral";
 }) {
+  const accent =
+    tone === "improved"
+      ? { border: "#bbf7d0", background: "#f0fdf4", color: "#166534" }
+      : tone === "worsened"
+        ? { border: "#fecaca", background: "#fef2f2", color: "#991b1b" }
+        : { border: "#e2e8f0", background: "#f8fafc", color: "#334155" };
   return (
     <div
       style={{
-        border: "1px solid #e2e8f0",
+        border: `1px solid ${accent.border}`,
         borderRadius: 10,
         marginBottom: 12,
         overflow: "hidden",
@@ -854,11 +866,11 @@ function StakeholderGroup({
       <div
         style={{
           padding: "10px 14px",
-          background: "#f8fafc",
-          borderBottom: "1px solid #e2e8f0",
+          background: accent.background,
+          borderBottom: `1px solid ${accent.border}`,
           fontSize: 13,
           fontWeight: 700,
-          color: "#334155",
+          color: accent.color,
         }}
       >
         {title}
@@ -903,14 +915,22 @@ function StakeholderImpactItem({
 function ObjectiveGroup({
   title,
   children,
+  tone = "neutral",
 }: {
   title: string;
   children: React.ReactNode;
+  tone?: "improved" | "worsened" | "neutral";
 }) {
+  const accent =
+    tone === "improved"
+      ? { border: "#bbf7d0", background: "#f0fdf4", color: "#166534" }
+      : tone === "worsened"
+        ? { border: "#fecaca", background: "#fef2f2", color: "#991b1b" }
+        : { border: "#e2e8f0", background: accent.background, color: "#334155" };
   return (
     <div
       style={{
-        border: "1px solid #e2e8f0",
+        border: `1px solid ${accent.border}`,
         borderRadius: 10,
         marginBottom: 12,
         overflow: "hidden",
@@ -920,10 +940,10 @@ function ObjectiveGroup({
         style={{
           padding: "10px 14px",
           background: "#f8fafc",
-          borderBottom: "1px solid #e2e8f0",
+          borderBottom: `1px solid ${accent.border}`,
           fontSize: 13,
           fontWeight: 700,
-          color: "#334155",
+          color: accent.color,
         }}
       >
         {title}

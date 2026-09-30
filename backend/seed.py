@@ -40,6 +40,18 @@ cohorts = [
     models.Cohort(id="se-y1", name="SE Year 1", program_id="se"),
     models.Cohort(id="se-y2", name="SE Year 2", program_id="se"),
     models.Cohort(id="ds-y3", name="DS Year 3", program_id="ds"),
+    models.Cohort(id="cohort-x", name="Cohort X", program_id="cs"),
+    models.Cohort(id="cohort-y", name="Cohort Y", program_id="cs"),
+    # Scenario C cohorts
+    models.Cohort(id="cohort-t", name="Cohort T", program_id="cs"),
+    models.Cohort(id="cohort-u", name="Cohort U", program_id="cs"),
+    models.Cohort(id="cohort-i", name="Cohort I", program_id="cs"),
+    models.Cohort(id="cohort-v", name="Cohort V", program_id="cs"),
+
+    # User-study-only cohorts (isolated from existing solver scenarios)
+    models.Cohort(id="cohort-lunch-study", name="Lunch Study Cohort", program_id="cs"),
+    models.Cohort(id="cohort-z", name="Cohort Z", program_id="cs"),
+    models.Cohort(id="cohort-r", name="Cohort R", program_id="cs"),
 ]
 
 db.add_all(cohorts)
@@ -57,6 +69,28 @@ lecturers = [
     models.Lecturer(id="lecturer-5", name="Prof. Linda Osei"),
     models.Lecturer(id="lecturer-6", name="Dr. Samuel Ruiz"),
     models.Lecturer(id="lecturer-7", name="Dr. Sarah Murphy"),
+    models.Lecturer(id="lecturer-8", name="Alice Mathematicer"),
+    models.Lecturer(id="lecturer-9", name="Bob Optimizer"),
+
+    # Scenario C — isolated lecturers
+    models.Lecturer(id="lecturer-10", name="Dr. Maya Walsh"),
+    models.Lecturer(id="lecturer-11", name="Dr. Niamh Kelly"),   # fixed specialist lab
+    models.Lecturer(id="lecturer-12", name="Dr. Liam Byrne"),   # cascade 1
+    models.Lecturer(id="lecturer-13", name="Dr. Aoife Nolan"),  # cascade 2
+    models.Lecturer(id="lecturer-14", name="Dr. Cian Doyle"),   # cascade 3
+    models.Lecturer(id="lecturer-15", name="Dr. Orla Hayes"),   # cascade 4
+    models.Lecturer(id="lecturer-16", name="Dr. Eoin Walsh"),   # cascade 5
+    models.Lecturer(id="lecturer-17", name="Dr. Tara Flynn"),   # cascade 6
+    models.Lecturer(id="lecturer-18", name="Dr. Sean Murphy"),  # cascade 7
+    models.Lecturer(id="lecturer-19", name="Dr. Eva Ryan"),     # cascade 8
+    models.Lecturer(id="lecturer-20", name="Dr. Conor Lee"),    # cascade 9
+    models.Lecturer(id="lecturer-21", name="Dr. Fiona Burke"),  # cascade 10
+    models.Lecturer(id="lecturer-22", name="Dr. Grace OBrien"),  # Cohort V fixed anchor
+
+    # User-study-only lecturers (isolated from all existing scenarios)
+    models.Lecturer(id="lecturer-23", name="Dr. Daniel Reed"),
+    models.Lecturer(id="lecturer-24", name="Dr. Emma Collins"),
+    models.Lecturer(id="lecturer-25", name="Dr. Rachel Morgan"),
 ]
 
 db.add_all(lecturers)
@@ -98,23 +132,6 @@ unavailability = [
     ),
 
     # -------------------------------------------------
-    # Dr. Aisha Khan — lecturer-3
-    # Tuesday 09:00 - 10:00
-    # Wednesday 16:00 - 17:00
-    # -------------------------------------------------
-
-    models.LecturerUnavailability(
-        lecturer_id="lecturer-3",
-        day="tue",
-        hour=9,
-    ),
-    models.LecturerUnavailability(
-        lecturer_id="lecturer-3",
-        day="wed",
-        hour=16,
-    ),
-
-    # -------------------------------------------------
     # Dr. Tom Baxter — lecturer-4
     # Monday 08:00 - 09:00
     # Friday 13:00 - 15:00
@@ -140,17 +157,6 @@ unavailability = [
     # Prof. Linda Osei — lecturer-5
     # Monday 15:00 - 17:00
     # -------------------------------------------------
-
-    models.LecturerUnavailability(
-        lecturer_id="lecturer-5",
-        day="mon",
-        hour=15,
-    ),
-    models.LecturerUnavailability(
-        lecturer_id="lecturer-5",
-        day="mon",
-        hour=16,
-    ),
 
     # -------------------------------------------------
     # Dr. Samuel Ruiz — lecturer-6
@@ -201,6 +207,260 @@ for day in TEACHING_DAYS:
         )
 
 
+# -------------------------------------------------
+# Dr. Aisha Khan — lecturer-3
+#
+# CONTROLLED TEST CASE:
+# Keep all of Aisha's existing teaching windows available,
+# plus exactly ONE alternative 2-hour window for relocating
+# DS370/session-15:
+#   Wednesday 14:00-16:00
+#
+# Existing Aisha sessions:
+#   session-3:  Monday 14:00-16:00
+#   session-10: Thursday 09:00-12:00
+#   session-15: Friday 09:00-11:00
+# -------------------------------------------------
+LECTURER_3_FREE_SLOTS = {
+    # Existing session-3
+    ("mon", 14),
+    ("mon", 15),
+
+    # One alternative relocation window for session-15
+    ("wed", 14),
+    ("wed", 15),
+
+    # Existing session-10
+    ("thu", 9),
+    ("thu", 10),
+    ("thu", 11),
+
+    # Existing session-15
+    ("fri", 9),
+    ("fri", 10),
+}
+
+for day in TEACHING_DAYS:
+    for hour in TEACHING_HOURS:
+        if (day, hour) in LECTURER_3_FREE_SLOTS:
+            continue
+        unavailability.append(
+            models.LecturerUnavailability(
+                lecturer_id="lecturer-3",
+                day=day,
+                hour=hour,
+            )
+        )
+
+
+# -------------------------------------------------
+# Prof. Linda Osei — lecturer-5
+#
+# TEST CASE: Linda is unavailable for the whole teaching week
+# except:
+#   - Monday 09:00-11:00       (test alternative for DS380)
+#   - Wednesday 09:00-11:00    (test alternative for DS380)
+#   - Tuesday 11:00-13:00      (existing session-5)
+#   - Thursday 11:00-13:00     (existing session-11)
+#   - Friday 11:00-13:00       (existing DS380/session-16)
+# -------------------------------------------------
+LECTURER_5_FREE_SLOTS = {
+    ("mon", 9),
+    ("mon", 10),
+    ("wed", 9),
+    ("wed", 10),
+    ("tue", 11),
+    ("tue", 12),
+    ("thu", 11),
+    ("thu", 12),
+    ("fri", 11),
+    ("fri", 12),
+}
+
+for day in TEACHING_DAYS:
+    for hour in TEACHING_HOURS:
+        if (day, hour) in LECTURER_5_FREE_SLOTS:
+            continue
+        unavailability.append(
+            models.LecturerUnavailability(
+                lecturer_id="lecturer-5",
+                day=day,
+                hour=hour,
+            )
+        )
+
+
+# -------------------------------------------------
+# Dr. Sarah Murphy — lecturer-7
+#
+# CONTROLLED TEST CASE:
+# Sarah keeps her existing teaching windows available, plus exactly
+# ONE alternative 2-hour window for relocating a Friday class:
+#   Tuesday 09:00-11:00
+#
+# Existing Sarah sessions:
+#   session-13: Friday 09:00-11:00
+#   session-14: Friday 11:00-13:00
+#   session-17: Thursday 14:00-16:00
+# -------------------------------------------------
+LECTURER_7_FREE_SLOTS = {
+    # One alternative relocation window
+    ("tue", 9),
+    ("tue", 10),
+
+    # Existing session-17
+    ("thu", 14),
+    ("thu", 15),
+
+    # Existing session-13 and session-14, plus requested Friday 15:00-17:00 window
+    ("fri", 9),
+    ("fri", 10),
+    ("fri", 11),
+    ("fri", 12),
+    ("fri", 15),
+    ("fri", 16),
+}
+
+for day in TEACHING_DAYS:
+    for hour in TEACHING_HOURS:
+        if (day, hour) in LECTURER_7_FREE_SLOTS:
+            continue
+        unavailability.append(
+            models.LecturerUnavailability(
+                lecturer_id="lecturer-7",
+                day=day,
+                hour=hour,
+            )
+        )
+
+
+# -------------------------------------------------
+# Alice Mathematicer — lecturer-8
+# External Mathematics teaching: available only Wednesday 09:00-12:00.
+# This makes the MA1001 lecture + workshop effectively immovable.
+# -------------------------------------------------
+LECTURER_8_FREE_SLOTS = {
+    ("wed", 9),
+    ("wed", 10),
+    ("wed", 11),
+}
+
+for day in TEACHING_DAYS:
+    for hour in TEACHING_HOURS:
+        if (day, hour) in LECTURER_8_FREE_SLOTS:
+            continue
+        unavailability.append(
+            models.LecturerUnavailability(
+                lecturer_id="lecturer-8",
+                day=day,
+                hour=hour,
+            )
+        )
+
+# -------------------------------------------------
+# Bob Optimizer — lecturer-9
+# Existing Optimization lecture: Tuesday 14:00-16:00.
+# Existing Optimization lab: Wednesday 16:00-17:00.
+# Requested demo move: lecture -> Wednesday 14:00-16:00, directly before lab.
+# Bob is deliberately limited to these teaching windows.
+# -------------------------------------------------
+LECTURER_9_FREE_SLOTS = {
+    # CSADS — existing class
+    ("wed", 9),
+    ("wed", 10),
+
+    # Optimization lecture — current position
+    ("tue", 14),
+    ("tue", 15),
+
+    # Optimization requested position + existing lab
+    ("wed", 14),
+    ("wed", 15),
+    ("wed", 16),
+}
+
+for day in TEACHING_DAYS:
+    for hour in TEACHING_HOURS:
+        if (day, hour) in LECTURER_9_FREE_SLOTS:
+            continue
+        unavailability.append(
+            models.LecturerUnavailability(
+                lecturer_id="lecturer-9",
+                day=day,
+                hour=hour,
+            )
+        )
+
+# -------------------------------------------------
+# SCENARIO C — two-stage recovery with a genuine mixed midpoint
+#
+# Stage 1 (5 perturbations): moving Applied Algorithms starts a five-class
+# Room F310 cascade. The fifth class ends in the free Tuesday 14:00-16:00
+# slot, repairing Cohort T but creating a Cohort V daily-hours overload.
+# Stage 2 (5 more perturbations): preserving Cohort V's daily-hours limit
+# moves its first class and starts a separate five-class Room H510 cascade.
+# lecturer-10 (Maya) can teach the target in its current Thursday
+# slot or the requested Tuesday 14:00-16:00 slot.
+# -------------------------------------------------
+SCENARIO_C_FREE_SLOTS = {
+    "lecturer-10": {("tue", 14), ("tue", 15), ("thu", 14), ("thu", 15)},
+    "lecturer-11": {("tue", 9), ("tue", 10)},
+
+    # Stage 1: A -> B -> C -> D -> E -> free Tue 14:00
+    "lecturer-12": {("tue", 11), ("tue", 12), ("wed", 9), ("wed", 10)},
+    "lecturer-13": {("wed", 9), ("wed", 10), ("wed", 11), ("wed", 12)},
+    "lecturer-14": {("wed", 11), ("wed", 12), ("wed", 14), ("wed", 15)},
+    "lecturer-15": {("wed", 14), ("wed", 15), ("thu", 9), ("thu", 10)},
+    "lecturer-16": {("thu", 9), ("thu", 10), ("tue", 14), ("tue", 15)},
+
+    # Stage 2: F -> G -> H -> I -> J -> free Mon 14:00
+    "lecturer-17": {("tue", 9), ("tue", 10), ("wed", 9), ("wed", 10)},
+    "lecturer-18": {("wed", 9), ("wed", 10), ("thu", 9), ("thu", 10)},
+    "lecturer-19": {("thu", 9), ("thu", 10), ("fri", 9), ("fri", 10)},
+    "lecturer-20": {("fri", 9), ("fri", 10), ("mon", 9), ("mon", 10)},
+    "lecturer-21": {("mon", 9), ("mon", 10), ("mon", 14), ("mon", 15)},
+
+    # Fixed Cohort V anchor: together with F this gives Cohort V 4h Tuesday.
+    "lecturer-22": {("tue", 11), ("tue", 12)},
+}
+
+for lecturer_id, free_slots in SCENARIO_C_FREE_SLOTS.items():
+    for day in TEACHING_DAYS:
+        for hour in TEACHING_HOURS:
+            if (day, hour) in free_slots:
+                continue
+            unavailability.append(
+                models.LecturerUnavailability(
+                    lecturer_id=lecturer_id,
+                    day=day,
+                    hour=hour,
+                )
+            )
+
+
+# -------------------------------------------------
+# User-study relaxation-only scenario — Dr. Rachel Morgan
+# Current class: Thursday 09:00-12:00. Requested move: Monday 12:00-15:00.
+# Rachel is available only for the current and requested windows, so the
+# requested 3-hour class necessarily occupies the full protected lunch window.
+# -------------------------------------------------
+LECTURER_25_FREE_SLOTS = {
+    ("mon", 12), ("mon", 13), ("mon", 14),
+    ("thu", 9), ("thu", 10), ("thu", 11),
+}
+
+for day in TEACHING_DAYS:
+    for hour in TEACHING_HOURS:
+        if (day, hour) in LECTURER_25_FREE_SLOTS:
+            continue
+        unavailability.append(
+            models.LecturerUnavailability(
+                lecturer_id="lecturer-25",
+                day=day,
+                hour=hour,
+            )
+        )
+
 db.add_all(unavailability)
 
 # endregion
@@ -245,6 +505,42 @@ rooms = [
         capacity=70,
         equipment="Whiteboard",
     ),
+    # Scenario C: only this room has the cascade equipment.
+    models.Room(
+        id="room-f310",
+        name="Room F310",
+        capacity=40,
+        equipment="Whiteboard,Cascade rig",
+    ),
+    # Scenario C fixed specialist laboratory.
+    models.Room(
+        id="lab-special",
+        name="Specialist Lab",
+        capacity=40,
+        equipment="Whiteboard,Specialist lab",
+    ),
+    # Scenario C second-stage cascade room: only this room has the V rig.
+    models.Room(
+        id="room-h510",
+        name="Room H510",
+        capacity=40,
+        equipment="Whiteboard,V rig",
+    ),
+    # Scenario C target room: reserved for Advanced Computing only.
+    models.Room(
+        id="room-g410",
+        name="Room G410",
+        capacity=40,
+        equipment="Projector",
+    ),
+
+    # User-study-only rooms so the added sessions do not affect existing scenarios.
+    models.Room(id="room-study-lunch", name="Study Room L1", capacity=40, equipment="Projector"),
+    models.Room(id="room-study-z1", name="Study Room Z1", capacity=40, equipment="Projector"),
+    models.Room(id="room-study-z2", name="Study Room Z2", capacity=40, equipment="Projector"),
+    models.Room(id="room-study-z3", name="Study Room Z3", capacity=40, equipment="Projector"),
+    models.Room(id="room-study-z4", name="Study Room Z4", capacity=40, equipment="Projector"),
+    models.Room(id="room-study-r", name="Study Room R1", capacity=40, equipment="Projector"),
 ]
 
 db.add_all(rooms)
@@ -369,11 +665,46 @@ models.Module(
 ),
 models.Module(
     id="module-17",
-    code="DS390",
-    title="Data Ethics and Governance",
+    code="MA1001",
+    title="Mathematics",
     required_capacity=40,
     required_equipment="Projector",
 ),
+models.Module(
+    id="module-18",
+    code="CSOPT",
+    title="Optimization",
+    required_capacity=40,
+    required_equipment="Projector",
+),
+models.Module(
+    id="module-19",
+    code="CSADS",
+    title="Algorithms and Data Structures",
+    required_capacity=40,
+    required_equipment="Projector",
+),    # Scenario C modules
+    models.Module(id="module-20", code="CSLAB", title="Specialist Systems Lab", required_capacity=40, required_equipment="Specialist lab"),
+    models.Module(id="module-21", code="CSCAS1", title="Applied Algorithms", required_capacity=40, required_equipment="Cascade rig"),
+    models.Module(id="module-22", code="CSREQ", title="Advanced Computing", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-23", code="CSCAS2", title="Distributed Systems", required_capacity=40, required_equipment="Cascade rig"),
+    models.Module(id="module-24", code="CSCAS3", title="Computer Vision", required_capacity=40, required_equipment="Cascade rig"),
+    models.Module(id="module-25", code="CSCAS4", title="Information Retrieval", required_capacity=40, required_equipment="Cascade rig"),
+    models.Module(id="module-26", code="CSCAS5", title="Cloud Computing", required_capacity=40, required_equipment="Cascade rig"),
+    models.Module(id="module-27", code="CSCAS6", title="Parallel Computing", required_capacity=40, required_equipment="V rig"),
+    models.Module(id="module-28", code="CSCAS7", title="Data Visualisation", required_capacity=40, required_equipment="V rig"),
+    models.Module(id="module-29", code="CSCAS8", title="Software Architecture", required_capacity=40, required_equipment="V rig"),
+    models.Module(id="module-30", code="CSCAS9", title="Network Science", required_capacity=40, required_equipment="V rig"),
+    models.Module(id="module-31", code="CSCAS10", title="Intelligent Systems", required_capacity=40, required_equipment="V rig"),
+    models.Module(id="module-32", code="CSVFIX", title="Cohort V Studio", required_capacity=40, required_equipment="Projector"),
+
+    # User-study-only modules
+    models.Module(id="module-33", code="CSLUNCH", title="Lunch Window Seminar", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-34", code="CSZ1", title="Cohort Z Class 1", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-35", code="CSZ2", title="Cohort Z Class 2", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-36", code="CSZ3", title="Cohort Z Class 3", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-37", code="CSZ4", title="Cohort Z Class 4", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-38", code="CSHCI", title="Human-Computer Interaction", required_capacity=40, required_equipment="Projector"),
 ]
 
 db.add_all(modules)
@@ -646,18 +977,6 @@ sessions_data = [
 # Crucially, no single existing Friday session belongs to BOTH
 # Sarah and DS Year 3. Therefore perturbation-only recovery needs
 # at least two moves: one Sarah session + one DS Year 3 session.
-#
-# TRADE-OFF ANCHOR:
-#   DS Year 3 also has DS390 on Tuesday 09:00-11:00 in A101.
-#   If a displaced 2h DS Year 3 Friday class is placed immediately
-#   after it (Tuesday 11:00-13:00), the solver can face a useful
-#   room-choice trade-off:
-#       A101 (70 seats): same room -> fewer cohort room changes,
-#                        but 30 unused seats for a 40-seat class.
-#       C302 (40 seats): exact capacity -> no wasted seats,
-#                        but requires a cohort room change.
-#   Keep cohort-gap and lecturer-idle effects equal where possible
-#   so the visible trade-off is capacity waste vs room changes.
 # ============================================================
 
 {
@@ -715,19 +1034,226 @@ sessions_data = [
     "program_ids": ["ds"],
     "cohort_ids": ["ds-y3"],
 },
+
+# ============================================================
+# CONTROLLED RECOVERY SCENARIO B — COHORT X
+#
+# Wednesday fixed Mathematics block:
+#   MA1001 lecture  09:00-11:00
+#   MA1001 workshop 11:00-12:00
+# Alice is unavailable outside Wednesday 09:00-12:00.
+#
+# Optimization:
+#   lecture currently Tuesday 14:00-16:00 (target session-20)
+#   lab already Wednesday 16:00-17:00
+#
+# Experimental request:
+#   Move Optimization lecture to Wednesday 14:00-16:00,
+#   immediately before the lab. Cohort X would then have 6h
+#   on Wednesday. The Mathematics block cannot be perturbed away
+#   because lecturer availability is unrelaxable.
+# ============================================================
 {
-    # Anchor session for the capacity-vs-room-change trade-off.
-    # A moved DS Y3 class can sit immediately after this at Tue 11:00-13:00.
     "id": "session-18",
     "module_id": "module-17",
-    "lecturer_id": "lecturer-4",
-    "room_id": "room-a101",
+    "lecturer_id": "lecturer-8",
+    "room_id": "room-c302",
     "type": "lecture",
-    "start": "2026-09-22T09:00:00",
-    "end": "2026-09-22T11:00:00",
-    "program_ids": ["ds"],
-    "cohort_ids": ["ds-y3"],
+    "start": "2026-09-23T09:00:00",
+    "end": "2026-09-23T11:00:00",
+    "program_ids": ["cs"],
+    "cohort_ids": ["cohort-x"],
 },
+{
+    "id": "session-19",
+    "module_id": "module-17",
+    "lecturer_id": "lecturer-8",
+    "room_id": "room-c302",
+    "type": "workshop",
+    "start": "2026-09-23T11:00:00",
+    "end": "2026-09-23T12:00:00",
+    "program_ids": ["cs"],
+    "cohort_ids": ["cohort-x"],
+},
+{
+    "id": "session-20",
+    "module_id": "module-18",
+    "lecturer_id": "lecturer-9",
+    "room_id": "room-d105",
+    "type": "lecture",
+    "start": "2026-09-22T14:00:00",
+    "end": "2026-09-22T16:00:00",
+    "program_ids": ["cs"],
+    "cohort_ids": ["cohort-x"],
+},
+{
+    "id": "session-21",
+    "module_id": "module-18",
+    "lecturer_id": "lecturer-9",
+    "room_id": "room-d105",
+    "type": "lab",
+    "start": "2026-09-23T16:00:00",
+    "end": "2026-09-23T17:00:00",
+    "program_ids": ["cs"],
+    "cohort_ids": ["cohort-x"],
+},
+{
+    "id": "session-22",
+    "module_id": "module-19",
+    "lecturer_id": "lecturer-9",
+    "room_id": "room-d105",
+    "type": "lecture",
+    "start": "2026-09-23T09:00:00",
+    "end": "2026-09-23T11:00:00",
+    "program_ids": ["cs"],
+    "cohort_ids": ["cohort-y"],
+},
+
+# ============================================================
+# CONTROLLED RECOVERY SCENARIO C — 0P+1R vs 5P+1R vs 10P+0R
+#
+# Experimental request:
+#   Move session-25 (Maya Walsh + Cohort T)
+#   from Thursday 14:00-16:00 to Tuesday 14:00-16:00, keeping Room G410.
+#
+# Cohort T already has 4h Tuesday (session-23 + session-24).
+# Requested target makes 6h.
+#
+# Recovery landscape:
+#   0P + 1R  : relax Cohort T max-hours.
+#   5P + 1R  : move session-24 through the five-class F310 cascade;
+#              Cohort T is repaired, but session-29 lands Tue 14:00-16:00
+#              and makes Cohort V exceed 4h Tuesday.
+#   10P + 0R : preserve Cohort V too by moving session-30, which triggers
+#              the separate five-class H510 cascade.
+# ============================================================
+{
+    "id": "session-23", "module_id": "module-20", "lecturer_id": "lecturer-11",
+    "room_id": "lab-special", "type": "lab",
+    "start": "2026-09-22T09:00:00", "end": "2026-09-22T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-t"],
+},
+{
+    "id": "session-24", "module_id": "module-21", "lecturer_id": "lecturer-12",
+    "room_id": "room-f310", "type": "lecture",
+    "start": "2026-09-22T11:00:00", "end": "2026-09-22T13:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-t"],
+},
+{
+    "id": "session-25", "module_id": "module-22", "lecturer_id": "lecturer-10",
+    "room_id": "room-g410", "type": "lecture",
+    "start": "2026-09-24T14:00:00", "end": "2026-09-24T16:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-t"],
+},
+# Stage 1 — five Room F310 perturbations. session-29 ends at free Tue 14:00.
+{
+    "id": "session-26", "module_id": "module-23", "lecturer_id": "lecturer-13",
+    "room_id": "room-f310", "type": "lecture",
+    "start": "2026-09-23T09:00:00", "end": "2026-09-23T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-u"],
+},
+{
+    "id": "session-27", "module_id": "module-24", "lecturer_id": "lecturer-14",
+    "room_id": "room-f310", "type": "lecture",
+    "start": "2026-09-23T11:00:00", "end": "2026-09-23T13:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-i"],
+},
+{
+    "id": "session-28", "module_id": "module-25", "lecturer_id": "lecturer-15",
+    "room_id": "room-f310", "type": "lecture",
+    "start": "2026-09-23T14:00:00", "end": "2026-09-23T16:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-u"],
+},
+{
+    "id": "session-29", "module_id": "module-26", "lecturer_id": "lecturer-16",
+    "room_id": "room-f310", "type": "lecture",
+    "start": "2026-09-24T09:00:00", "end": "2026-09-24T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-v"],
+},
+# Stage 2 — Cohort V starts at exactly 4h Tuesday: F + fixed anchor session-35.
+# If session-29 arrives Tue 14:00-16:00, Cohort V reaches 6h. Moving F repairs it
+# and triggers the five-class H510 cascade.
+{
+    "id": "session-30", "module_id": "module-27", "lecturer_id": "lecturer-17",
+    "room_id": "room-h510", "type": "lecture",
+    "start": "2026-09-22T09:00:00", "end": "2026-09-22T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-v"],
+},
+{
+    "id": "session-31", "module_id": "module-28", "lecturer_id": "lecturer-18",
+    "room_id": "room-h510", "type": "lecture",
+    "start": "2026-09-23T09:00:00", "end": "2026-09-23T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-v"],
+},
+{
+    "id": "session-32", "module_id": "module-29", "lecturer_id": "lecturer-19",
+    "room_id": "room-h510", "type": "lecture",
+    "start": "2026-09-24T09:00:00", "end": "2026-09-24T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-v"],
+},
+{
+    "id": "session-33", "module_id": "module-30", "lecturer_id": "lecturer-20",
+    "room_id": "room-h510", "type": "lecture",
+    "start": "2026-09-25T09:00:00", "end": "2026-09-25T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-v"],
+},
+{
+    "id": "session-34", "module_id": "module-31", "lecturer_id": "lecturer-21",
+    "room_id": "room-h510", "type": "lecture",
+    "start": "2026-09-21T09:00:00", "end": "2026-09-21T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-v"],
+},
+{
+    "id": "session-35", "module_id": "module-32", "lecturer_id": "lecturer-22",
+    "room_id": "room-g410", "type": "seminar",
+    "start": "2026-09-22T11:00:00", "end": "2026-09-22T13:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-v"],
+},
+
+# ============================================================
+# USER STUDY SCENARIOS — isolated from existing solver scenarios
+# ============================================================
+# Lunch-break recognition: isolated study lecturer teaches continuously Monday 12:00-14:00.
+{
+    "id": "session-36", "module_id": "module-33", "lecturer_id": "lecturer-24",
+    "room_id": "room-study-lunch", "type": "seminar",
+    "start": "2026-09-21T12:00:00", "end": "2026-09-21T14:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-lunch-study"],
+},
+# Missing-constraint recognition: Daniel teaches four consecutive one-hour classes.
+{
+    "id": "session-37", "module_id": "module-34", "lecturer_id": "lecturer-23",
+    "room_id": "room-study-z1", "type": "lecture",
+    "start": "2026-09-22T09:00:00", "end": "2026-09-22T10:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-z"],
+},
+{
+    "id": "session-38", "module_id": "module-35", "lecturer_id": "lecturer-23",
+    "room_id": "room-study-z2", "type": "lecture",
+    "start": "2026-09-22T10:00:00", "end": "2026-09-22T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-z"],
+},
+{
+    "id": "session-39", "module_id": "module-36", "lecturer_id": "lecturer-23",
+    "room_id": "room-study-z3", "type": "lecture",
+    "start": "2026-09-22T11:00:00", "end": "2026-09-22T12:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-z"],
+},
+{
+    "id": "session-40", "module_id": "module-37", "lecturer_id": "lecturer-23",
+    "room_id": "room-study-z4", "type": "lecture",
+    "start": "2026-09-22T12:00:00", "end": "2026-09-22T13:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-z"],
+},
+
+# Relaxation-only recovery scenario: request moving this class to Monday 12:00-15:00.
+{
+    "id": "session-41", "module_id": "module-38", "lecturer_id": "lecturer-25",
+    "room_id": "room-study-r", "type": "lecture",
+    "start": "2026-09-24T09:00:00", "end": "2026-09-24T12:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-r"],
+},
+
 ]
 
 
