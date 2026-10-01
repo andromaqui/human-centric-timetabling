@@ -52,6 +52,8 @@ cohorts = [
     models.Cohort(id="cohort-lunch-study", name="Lunch Study Cohort", program_id="cs"),
     models.Cohort(id="cohort-z", name="Cohort Z", program_id="cs"),
     models.Cohort(id="cohort-r", name="Cohort R", program_id="cs"),
+    # ANY/FIND smart-relaxation test cohort
+    models.Cohort(id="cohort-any", name="ANY Recovery Cohort", program_id="cs"),
 ]
 
 db.add_all(cohorts)
@@ -91,6 +93,12 @@ lecturers = [
     models.Lecturer(id="lecturer-23", name="Dr. Daniel Reed"),
     models.Lecturer(id="lecturer-24", name="Dr. Emma Collins"),
     models.Lecturer(id="lecturer-25", name="Dr. Rachel Morgan"),
+    # ANY/FIND smart-relaxation test lecturers
+    models.Lecturer(id="lecturer-26", name="Dr. Alex Turner"),
+    models.Lecturer(id="lecturer-27", name="Dr. Tuesday Anchor"),
+    models.Lecturer(id="lecturer-28", name="Dr. Wednesday Anchor"),
+    models.Lecturer(id="lecturer-29", name="Dr. Thursday Anchor"),
+    models.Lecturer(id="lecturer-30", name="Dr. Friday Anchor"),
 ]
 
 db.add_all(lecturers)
@@ -461,6 +469,30 @@ for day in TEACHING_DAYS:
             )
         )
 
+# -------------------------------------------------
+# ANY/FIND SMART RELAXATION TEST — Dr. Alex Turner
+#
+# Target session is Monday 09:00-12:00 (3h).
+# On Monday Alex is available ONLY for those three hours.
+# Tuesday-Friday Alex is fully available.
+# Therefore Time=ANY/FIND cannot use another Monday slot.
+# -------------------------------------------------
+LECTURER_26_FREE_SLOTS = {
+    ("mon", 9), ("mon", 10), ("mon", 11),
+}
+
+for hour in TEACHING_HOURS:
+    if ("mon", hour) in LECTURER_26_FREE_SLOTS:
+        continue
+    unavailability.append(
+        models.LecturerUnavailability(
+            lecturer_id="lecturer-26",
+            day="mon",
+            hour=hour,
+        )
+    )
+
+
 db.add_all(unavailability)
 
 # endregion
@@ -541,6 +573,7 @@ rooms = [
     models.Room(id="room-study-z3", name="Study Room Z3", capacity=40, equipment="Projector"),
     models.Room(id="room-study-z4", name="Study Room Z4", capacity=40, equipment="Projector"),
     models.Room(id="room-study-r", name="Study Room R1", capacity=40, equipment="Projector"),
+    models.Room(id="room-study-any", name="Study Room ANY", capacity=40, equipment="Projector"),
 ]
 
 db.add_all(rooms)
@@ -705,6 +738,12 @@ models.Module(
     models.Module(id="module-36", code="CSZ3", title="Cohort Z Class 3", required_capacity=40, required_equipment="Projector"),
     models.Module(id="module-37", code="CSZ4", title="Cohort Z Class 4", required_capacity=40, required_equipment="Projector"),
     models.Module(id="module-38", code="CSHCI", title="Human-Computer Interaction", required_capacity=40, required_equipment="Projector"),
+    # ANY/FIND smart-relaxation test modules
+    models.Module(id="module-39", code="CSANY", title="ANY Recovery Target", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-40", code="CSANYT", title="ANY Tuesday Anchor", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-41", code="CSANYW", title="ANY Wednesday Anchor", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-42", code="CSANYH", title="ANY Thursday Anchor", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-43", code="CSANYF", title="ANY Friday Anchor", required_capacity=40, required_equipment="Projector"),
 ]
 
 db.add_all(modules)
@@ -1252,6 +1291,46 @@ sessions_data = [
     "room_id": "room-study-r", "type": "lecture",
     "start": "2026-09-24T09:00:00", "end": "2026-09-24T12:00:00",
     "program_ids": ["cs"], "cohort_ids": ["cohort-r"],
+},
+
+# ============================================================
+# ANY/FIND SMART RELAXATION SCENARIO
+#
+# session-42 is the 3h target, currently Monday 09:00-12:00.
+# Its lecturer has no other Monday availability, but is free Tue-Fri.
+# Cohort ANY already has 2h on every Tue-Fri.
+# With a 4h cohort daily limit, moving the 3h target to any Tue-Fri
+# creates 5h and therefore requires exactly one cohort-hours relaxation.
+# ============================================================
+{
+    "id": "session-42", "module_id": "module-39", "lecturer_id": "lecturer-26",
+    "room_id": "room-study-any", "type": "lecture",
+    "start": "2026-09-21T09:00:00", "end": "2026-09-21T12:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-any"],
+},
+{
+    "id": "session-43", "module_id": "module-40", "lecturer_id": "lecturer-27",
+    "room_id": "room-study-any", "type": "lecture",
+    "start": "2026-09-22T09:00:00", "end": "2026-09-22T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-any"],
+},
+{
+    "id": "session-44", "module_id": "module-41", "lecturer_id": "lecturer-28",
+    "room_id": "room-study-any", "type": "lecture",
+    "start": "2026-09-23T09:00:00", "end": "2026-09-23T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-any"],
+},
+{
+    "id": "session-45", "module_id": "module-42", "lecturer_id": "lecturer-29",
+    "room_id": "room-study-any", "type": "lecture",
+    "start": "2026-09-24T09:00:00", "end": "2026-09-24T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-any"],
+},
+{
+    "id": "session-46", "module_id": "module-43", "lecturer_id": "lecturer-30",
+    "room_id": "room-study-any", "type": "lecture",
+    "start": "2026-09-25T09:00:00", "end": "2026-09-25T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-any"],
 },
 
 ]

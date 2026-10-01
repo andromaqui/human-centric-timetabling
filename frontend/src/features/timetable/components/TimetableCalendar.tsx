@@ -1,10 +1,17 @@
 import { useTimetableData } from "../hooks/useTimetableData";
 import { mapSessionsToCalendarEvents } from "../utils/calendarMappers";
 import { TimetableView } from "./TimetableView";
+import { resetTempTimetable } from "../../../shared/api/timetableApi";
 
 import "./TimetableCalendar.css";
 
 export function TimetableCalendar() {
+
+  async function handleReset() {
+    await resetTempTimetable();
+    window.location.reload();
+}
+
   const { data, error } = useTimetableData();
 
   if (error) {
@@ -55,7 +62,16 @@ export function TimetableCalendar() {
     data.cohorts,
   );
 
+  <button onClick={handleReset}>
+  Reset timetable
+</button>
+
   return (
+  <>
+    <button onClick={handleReset}>
+      Reset timetable
+    </button>
+
     <TimetableView
       events={events}
       showHeader
@@ -66,5 +82,6 @@ export function TimetableCalendar() {
       showWeekHeading
       showLecturerAvailability
     />
-  );
+  </>
+);
 }

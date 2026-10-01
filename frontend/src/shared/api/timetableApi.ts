@@ -53,7 +53,7 @@ export interface ApiRoom {
 }
 
 export function getSessions() {
-  return api.get<ApiSession[]>("/sessions/");
+  return api.get<ApiSession[]>("/sessions/temp/");
 }
 
 export function getModules() {
@@ -80,4 +80,12 @@ export function getPrograms() {
 
 export function getRooms() {
   return api.get<ApiRoom[]>("/rooms/");
+}
+
+export async function applyTempTimetable(moves: unknown[]) {
+  return api.post("/sessions/temp/apply", { moves });
+}
+
+export async function resetTempTimetable() {
+  return api.delete("/sessions/temp/");
 }

@@ -123,6 +123,18 @@ type RescheduleRequest = {
   max_additional_changes?: number | null;
 };
 
+type AnyMinimumRelaxationResult = {
+  status: "feasible" | "infeasible" | "invalid";
+  reason?: string | null;
+  minimum_relaxations?: number | null;
+  relaxations?: TemporaryConstraintDeactivation[];
+  start_slot?: number;
+  day?: string;
+  time?: string;
+  room_id?: string;
+  lecturer_id?: string;
+};
+
 type MixedRecoveryResult = {
   status: "feasible" | "infeasible" | "invalid";
   reason: string | null;
@@ -329,6 +341,10 @@ type Step4SolutionProps = {
   solverResult: RescheduleResponse | null;
   perturbationAlternatives: PerturbationAlternativesResponse | null;
   mixedRecoveryRequest: RescheduleRequest;
+  anyRelaxationResult: AnyMinimumRelaxationResult | null;
+  anyRelaxationLoading: boolean;
+  anyRelaxationError: string | null;
+  onFindMinimumRelaxation: () => void | Promise<void>;
 
   selectedModuleLabel: string | null;
   selectedEventFallbackId?: string;
@@ -417,6 +433,10 @@ export function Step4Solution({
   solverResult,
   perturbationAlternatives,
   mixedRecoveryRequest,
+  anyRelaxationResult,
+  anyRelaxationLoading,
+  anyRelaxationError,
+  onFindMinimumRelaxation,
 
   selectedModuleLabel,
   selectedEventFallbackId,
@@ -915,6 +935,11 @@ async function findMixedRecoverySolution() {
   const hasActiveDiagnosis =
     activeViolations.length > 0;
 
+  const requestContainsFind =
+    mixedRecoveryRequest.time_mode === "find" ||
+    mixedRecoveryRequest.room_mode === "find" ||
+    mixedRecoveryRequest.lecturer_mode === "find";
+
   // Start mixed-recovery guidance automatically as soon as an infeasible,
   // diagnosed request reaches Step 4. This is independent from the separate
   // minimum-perturbation request.
@@ -935,8 +960,7 @@ async function findMixedRecoverySolution() {
 
   useEffect(() => {
     if (
-      !hasActiveDiagnosis ||
-      needsInteractiveDiagnosis ||
+      (!requestContainsFind && !hasActiveDiagnosis) ||
       mixedGuidance ||
       mixedGuidanceLoading
     ) {
@@ -979,7 +1003,7 @@ async function findMixedRecoverySolution() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     hasActiveDiagnosis,
-    needsInteractiveDiagnosis,
+    requestContainsFind,
     mixedRecoveryRequestKey,
   ]);
 
@@ -1079,25 +1103,40 @@ async function findMixedRecoverySolution() {
   ]);
 
 
+/*
+ * Concrete requests can keep using the lightweight recovery_options gate.
+ *
+ * FIND / ANY is different: the detailed minimum-perturbation solver must
+ * search globally across all allowed target placements. A candidate-level
+ * or preliminary `can_perturb: false` must therefore not disable this route.
+ * Let /min-perturbation make the authoritative decision instead.
+ */
 const perturbationAvailability =
-  !needsInteractiveDiagnosis &&
   solverResult?.status === "infeasible"
-    ? solverResult.recovery_options?.can_perturb ?? null
+    ? requestContainsFind
+      ? true
+      : !needsInteractiveDiagnosis
+        ? solverResult.recovery_options?.can_perturb ?? null
+        : false
     : false;
 
 const checkingPerturbations =
-  !needsInteractiveDiagnosis &&
   solverResult?.status === "infeasible" &&
+  !requestContainsFind &&
+  !needsInteractiveDiagnosis &&
   (minimumPerturbationLoading || perturbationAvailability === null);
 
 const canRearrange =
-  !needsInteractiveDiagnosis &&
   solverResult?.status === "infeasible" &&
-  perturbationAvailability === true;
+  (
+    requestContainsFind ||
+    (!needsInteractiveDiagnosis && perturbationAvailability === true)
+  );
 
 const minimumPerturbations =
-  !needsInteractiveDiagnosis &&
-  solverResult?.status === "infeasible"
+  solverResult?.status === "infeasible" &&
+  !requestContainsFind &&
+  !needsInteractiveDiagnosis
     ? solverResult.recovery_options?.minimum_perturbations ?? null
     : null;
 
@@ -1164,15 +1203,18 @@ const minimumPerturbations =
     );
 
 
-  const canRelax =
+const canRelax =
+  requestContainsFind ||
+  (
     hasActiveDiagnosis &&
-    unrelaxableViolations.length === 0;
+    unrelaxableViolations.length === 0
+  );
 
-  // Mixed recovery has its own solver/guidance path. It only needs a
-  // diagnosed infeasible request; it does not need to wait for the separate
-  // perturbation-only calculation to prove canRearrange.
+  // Concrete requests still use their diagnosed blockers.
+  // FIND requests are searched globally by the mixed solver, independently
+  // of whichever concrete candidate is selected in the explanation UI.
   const canMixedRecovery =
-    hasActiveDiagnosis;
+    requestContainsFind || hasActiveDiagnosis;
 
 
   const lecturerUnavailableViolation =
@@ -1299,6 +1341,23 @@ const minimumPerturbations =
       : constraint.instance_id;
   }
 
+
+function getAnyRelaxationConstraintContext(
+  constraint: TemporaryConstraintDeactivation,
+): string {
+  let stakeholder = constraint.instance_id;
+  if (constraint.instance_type === "cohort") {
+    stakeholder = cohorts.find((item) => item.id === constraint.instance_id)?.name ?? constraint.instance_id;
+  } else if (constraint.instance_type === "lecturer") {
+    stakeholder = getLecturerName(constraint.instance_id);
+  } else if (constraint.instance_type === "room") {
+    stakeholder = getRoomName(constraint.instance_id);
+  }
+  const day = constraint.day
+    ? DAY_LABELS[constraint.day.slice(0, 3).toLowerCase()] ?? constraint.day
+    : null;
+  return day ? `${stakeholder} · ${day}` : stakeholder;
+}
 
 function getAdditionalChangeSessionLabel(
   sessionId: string,
@@ -2462,96 +2521,88 @@ function getAdditionalChangeSessionLabel(
                     }}
                   >
                     {/* LEFT — RELAXATION ONLY */}
-                    <div
-                      className={`recovery-option ${!canRelax ? "disabled" : ""}`}
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        minHeight: "260px",
-                        padding: "18px",
-                      }}
-                    >
-                      <div className="recovery-option-icon">
-                        <SlidersHorizontal size={20} />
-                      </div>
-
+                    <div className={`recovery-option ${!canRelax ? "disabled" : ""}`} style={{ display: "flex", flexDirection: "column", minHeight: "260px", padding: "18px" }}>
+                      <div className="recovery-option-icon"><SlidersHorizontal size={20} /></div>
                       <div style={{ marginTop: "14px" }}>
                         <div className="recovery-title-with-status">
                           <h4>Violate constraints only</h4>
-
-                          {!canRelax && (
-                            <span className="recovery-unavailable-badge">
-                              Not available
-                            </span>
-                          )}
+                          {!canRelax && <span className="recovery-unavailable-badge">Not available</span>}
                         </div>
+                        <p>Keep the rest of the timetable unchanged and relax the constraints blocking this request.</p>
 
-                        <p>
-                          Keep the rest of the timetable unchanged and relax the
-                          constraints blocking this request.
-                        </p>
-
-                        {canRelax ? (
+                        {requestContainsFind ? (
+                          anyRelaxationResult?.status === "feasible" ? (
+                            <div style={{ marginTop: "12px" }}>
+                              <strong>Selected placement:</strong>
+                              <div style={{ marginTop: "6px" }}>{anyRelaxationResult.day} {anyRelaxationResult.time}</div>
+                              <div style={{ marginTop: "3px" }}>
+                                {anyRelaxationResult.room_id ? getRoomName(anyRelaxationResult.room_id) : "—"}
+                                {" · "}
+                                {anyRelaxationResult.lecturer_id ? getLecturerName(anyRelaxationResult.lecturer_id) : "—"}
+                              </div>
+                              <div style={{ marginTop: "14px" }}>
+                                <strong>Constraints to relax:</strong>
+                                <ul style={{ margin: "8px 0 0", paddingLeft: "20px" }}>
+                                  {(anyRelaxationResult.relaxations ?? []).map((constraint, index) => (
+                                    <li key={`${constraint.constraint_id}-${constraint.instance_id}-${constraint.day ?? ""}-${index}`} style={{ marginBottom: "4px" }}>
+                                      {getTemporaryConstraintLabel(constraint.constraint_id)}{" — "}{getAnyRelaxationConstraintContext(constraint)}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                              <div className="recovery-protection" style={{ marginTop: "10px" }}>
+                                {anyRelaxationResult.minimum_relaxations ?? anyRelaxationResult.relaxations?.length ?? 0} constraint{(anyRelaxationResult.minimum_relaxations ?? anyRelaxationResult.relaxations?.length ?? 0) === 1 ? "" : "s"} relaxed.
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ marginTop: "12px" }}>
+                              <span className="recovery-protection">Search all allowed placements and find the solution requiring the fewest constraint relaxations.</span>
+                              {anyRelaxationError && <div className="recovery-disabled-reason" style={{ marginTop: "10px" }}>{anyRelaxationError}</div>}
+                            </div>
+                          )
+                        ) : canRelax ? (
                           <div style={{ marginTop: "12px" }}>
                             <strong>Constraints to relax:</strong>
-                            <ul
-                              style={{
-                                margin: "8px 0 0",
-                                paddingLeft: "20px",
-                              }}
-                            >
+                            <ul style={{ margin: "8px 0 0", paddingLeft: "20px" }}>
                               {activeViolations.map((violation, index) => (
-                                <li
-                                  key={`${violation.type}-${index}`}
-                                  style={{ marginBottom: "4px" }}
-                                >
-                                  {formatViolationNice(violation)}
-                                </li>
+                                <li key={`${violation.type}-${index}`} style={{ marginBottom: "4px" }}>{formatViolationNice(violation)}</li>
                               ))}
                             </ul>
                           </div>
                         ) : firstUnrelaxableViolation ? (
-                          <span className="recovery-disabled-reason">
-                            Relaxation alone cannot resolve this request.{" "}
-                            {formatViolationNice(firstUnrelaxableViolation)} is
-                            unrelaxable.
-                          </span>
+                          <span className="recovery-disabled-reason">Relaxation alone cannot resolve this request. {formatViolationNice(firstUnrelaxableViolation)} is unrelaxable.</span>
                         ) : (
-                          <span className="recovery-disabled-reason">
-                            No relaxation-only recovery is available.
-                          </span>
+                          <span className="recovery-disabled-reason">No relaxation-only recovery is available.</span>
                         )}
                       </div>
 
                       <div style={{ marginTop: "auto", paddingTop: "20px" }}>
-                        {canRelax && temporaryDeactivations.length > 0
-                          ? storeButton({
-                              key: `relax:${mixedRecoveryRequest.session_id}:${mixedRecoveryRequest.requested_start ?? ""}:${mixedRecoveryRequest.requested_room_id ?? ""}:${mixedRecoveryRequest.requested_lecturer_id ?? ""}:${temporaryDeactivations.map((item) => `${item.constraint_id}:${item.instance_id}:${item.day ?? ""}`).join(",")}`,
-                              source: "direct",
-                              label: "Relaxation solution",
-                              session_id: mixedRecoveryRequest.session_id,
-                              day: diagDay ?? activeViolations.find((violation) => violation.day)?.day,
-                              time:
-                                diagTime ??
-                                (mixedRecoveryRequest.requested_start
-                                  ? mixedRecoveryRequest.requested_start.slice(11, 16)
-                                  : undefined),
-                              room_id: diagRoom ?? mixedRecoveryRequest.requested_room_id ?? undefined,
-                              lecturer_id: diagLecturer ?? mixedRecoveryRequest.requested_lecturer_id ?? undefined,
-                              objective_score: null,
-                              additional_changes: [],
-                              relaxations: temporaryDeactivations,
+                        {requestContainsFind ? (
+                          anyRelaxationResult?.status === "feasible" ? (
+                            storeButton({
+                              key: `relax-any:${mixedRecoveryRequest.session_id}:${anyRelaxationResult.start_slot ?? ""}:${anyRelaxationResult.room_id ?? ""}:${anyRelaxationResult.lecturer_id ?? ""}:${(anyRelaxationResult.relaxations ?? []).map((item) => `${item.constraint_id}:${item.instance_id}:${item.day ?? ""}`).join(",")}`,
+                              source: "direct", label: "Relaxation solution", session_id: mixedRecoveryRequest.session_id,
+                              day: anyRelaxationResult.day, time: anyRelaxationResult.time, room_id: anyRelaxationResult.room_id, lecturer_id: anyRelaxationResult.lecturer_id,
+                              objective_score: null, additional_changes: [], relaxations: anyRelaxationResult.relaxations ?? [],
                             })
-                          : (
-                            <button
-                              type="button"
-                              className="find-rearrangements-button"
-                              disabled
-                              style={{ width: "auto", marginTop: "14px" }}
-                            >
-                              Store
+                          ) : (
+                            <button type="button" className="find-rearrangements-button" onClick={() => void onFindMinimumRelaxation()} disabled={anyRelaxationLoading} style={{ width: "auto", marginTop: "14px" }}>
+                              {anyRelaxationLoading ? "Finding relaxation solution…" : "Find relaxation solution"}
                             </button>
-                          )}
+                          )
+                        ) : canRelax && temporaryDeactivations.length > 0 ? (
+                          storeButton({
+                            key: `relax:${mixedRecoveryRequest.session_id}:${mixedRecoveryRequest.requested_start ?? ""}:${mixedRecoveryRequest.requested_room_id ?? ""}:${mixedRecoveryRequest.requested_lecturer_id ?? ""}:${temporaryDeactivations.map((item) => `${item.constraint_id}:${item.instance_id}:${item.day ?? ""}`).join(",")}`,
+                            source: "direct", label: "Relaxation solution", session_id: mixedRecoveryRequest.session_id,
+                            day: diagDay ?? activeViolations.find((violation) => violation.day)?.day,
+                            time: diagTime ?? (mixedRecoveryRequest.requested_start ? mixedRecoveryRequest.requested_start.slice(11, 16) : undefined),
+                            room_id: diagRoom ?? mixedRecoveryRequest.requested_room_id ?? undefined,
+                            lecturer_id: diagLecturer ?? mixedRecoveryRequest.requested_lecturer_id ?? undefined,
+                            objective_score: null, additional_changes: [], relaxations: temporaryDeactivations,
+                          })
+                        ) : (
+                          <button type="button" className="find-rearrangements-button" disabled style={{ width: "auto", marginTop: "14px" }}>Store</button>
+                        )}
                       </div>
                     </div>
 
@@ -2787,8 +2838,9 @@ function getAdditionalChangeSessionLabel(
 
                           {!perturbationResultsMinimized && (
                             <p className="step-description" style={{ marginBottom: 0 }}>
-                              Each option keeps all active constraints enforced and moves
-                              the minimum number of additional classes.
+                              {requestContainsFind
+                                ? "The solver searched all allowed ANY placements, kept every active constraint enforced, and chose a minimum-perturbation recovery."
+                                : "Each option keeps all active constraints enforced and moves the minimum number of additional classes."}
                             </p>
                           )}
 
@@ -2845,8 +2897,8 @@ function getAdditionalChangeSessionLabel(
                                   <h4 style={{ margin: "6px 0 0" }}>
                                     {solution.perturbation_count}{" "}
                                     {solution.perturbation_count === 1
-                                      ? "additional class moved"
-                                      : "additional classes moved"}
+                                      ? "additional perturbation"
+                                      : "additional perturbations"}
                                   </h4>
                                 </div>
 
@@ -2857,6 +2909,32 @@ function getAdditionalChangeSessionLabel(
                                   </div>
                                 )}
                               </div>
+
+                              {requestContainsFind && (
+                                <div
+                                  style={{
+                                    marginTop: "14px",
+                                    padding: "12px",
+                                    border: "1px solid #e5e7eb",
+                                    borderRadius: "10px",
+                                  }}
+                                >
+                                  <strong>Selected target placement</strong>
+                                  <div style={{ marginTop: "8px", fontSize: "13px" }}>
+                                    <strong>Time:</strong>{" "}
+                                    {DAY_LABELS[solution.day.slice(0, 3).toLowerCase()] ?? solution.day}{" "}
+                                    {solution.time}
+                                  </div>
+                                  <div style={{ marginTop: "6px", fontSize: "13px" }}>
+                                    <strong>Room:</strong>{" "}
+                                    {getRoomName(solution.room_id)}
+                                  </div>
+                                  <div style={{ marginTop: "6px", fontSize: "13px" }}>
+                                    <strong>Lecturer:</strong>{" "}
+                                    {getLecturerName(solution.lecturer_id)}
+                                  </div>
+                                </div>
+                              )}
 
                               <div style={{ marginTop: "14px" }}>
                                 {solution.additional_changes.map((change) => {

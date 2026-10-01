@@ -13,6 +13,7 @@ import { api } from "../../../shared/api/client";
 import type {Cohort, Lecturer, Program, Session, Objective, ObjectiveStakeholder,} from "../types";
 import "./ReschedulePage.css";
 import { RoomSuitability } from "../components/RoomSuitability";
+import { applyTempTimetable } from "../../../shared/api/timetableApi";
 
 function formatViolation(v: Violation): string {
   switch (v.type) {
@@ -91,6 +92,48 @@ const DAY_LABELS: Record<string, string> = {
   thu: "Thursday",
   fri: "Friday",
 };
+
+
+async function saveChosenSolution() {
+  if (!activeStoredSolution) return;
+
+  const moves = [
+    {
+      session_id: activeStoredSolution.session_id,
+      new_start: toTimetableDateTime(
+        activeStoredSolution.day!,
+        activeStoredSolution.time!,
+      ),
+      room_id: activeStoredSolution.room_id,
+      lecturer_id: activeStoredSolution.lecturer_id,
+    },
+
+    ...activeStoredSolution.additional_changes.map((change) => ({
+      session_id: change.session_id,
+      new_start: toTimetableDateTime(
+        change.new_day,
+        change.new_time,
+      ),
+      room_id: change.new_room_id,
+    })),
+  ];
+
+  await applyTempTimetable(moves);
+}
+
+
+function toTimetableDateTime(day: string, time: string) {
+  const dates: Record<string, string> = {
+    monday: "2026-09-21",
+    tuesday: "2026-09-22",
+    wednesday: "2026-09-23",
+    thursday: "2026-09-24",
+    friday: "2026-09-25",
+  };
+
+  return `${dates[day.toLowerCase()]}T${time}:00`;
+}
+
 
 function buildTimetableLocalStart(
   referenceStart: string | Date,
@@ -261,6 +304,18 @@ type RecoveryOptions = {
   minimum_perturbations: number | null;
 };
 
+type AnyMinimumRelaxationResult = {
+  status: "feasible" | "infeasible" | "invalid";
+  reason?: string | null;
+  minimum_relaxations?: number | null;
+  relaxations?: TemporaryConstraintDeactivation[];
+  start_slot?: number;
+  day?: string;
+  time?: string;
+  room_id?: string;
+  lecturer_id?: string;
+};
+
 type RescheduleResponse =
   | {
       status: "feasible";
@@ -424,6 +479,10 @@ export function ReschedulePage() {
   // stays mounted instead of switching to the page-level solver loading view.
   const [rearrangementLoading, setRearrangementLoading] = useState(false);
   const [solverError, setSolverError] = useState<string | null>(null);
+  const [anyRelaxationResult, setAnyRelaxationResult] =
+    useState<AnyMinimumRelaxationResult | null>(null);
+  const [anyRelaxationLoading, setAnyRelaxationLoading] = useState(false);
+  const [anyRelaxationError, setAnyRelaxationError] = useState<string | null>(null);
 
   const [
     showAnalyticalExploration,
@@ -460,36 +519,65 @@ export function ReschedulePage() {
     setStoredSolutions((current) => current.filter((item) => item.key !== key));
   }
 
-  function chooseStoredSolution(candidate: StoredSolutionCandidate) {
-    if (!selectedEvent || !data) return;
+async function chooseStoredSolution(candidate: StoredSolutionCandidate) {
+  if (!selectedEvent || !data) return;
 
-    const originalStart = new Date(selectedEvent.session.start);
-    const fallbackDay = originalStart.toLocaleDateString("en-US", { weekday: "long" });
-    const fallbackTime = originalStart.toLocaleTimeString("en-GB", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-    const fallbackRoomId =
-      data.rooms.find((room) => room.name === selectedEvent.session.room)?.id ??
-      selectedEvent.session.room;
+  const originalStart = new Date(selectedEvent.session.start);
 
-    setSolverResult({
-      status: "feasible",
-      reason: null,
+  const fallbackDay = originalStart.toLocaleDateString("en-US", {
+    weekday: "long",
+  });
+
+  const fallbackTime = originalStart.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const fallbackRoomId =
+    data.rooms.find((room) => room.name === selectedEvent.session.room)?.id ??
+    selectedEvent.session.room;
+
+  const moves = [
+    {
       session_id: candidate.session_id,
-      day: candidate.day ?? fallbackDay,
-      time: candidate.time ?? fallbackTime,
+      new_start: toTimetableDateTime(
+        candidate.day ?? fallbackDay,
+        candidate.time ?? fallbackTime,
+      ),
       room_id: candidate.room_id ?? fallbackRoomId,
-      lecturer_id: candidate.lecturer_id ?? selectedEvent.session.lecturerId,
-      additional_changes: candidate.additional_changes,
-      objective_score: candidate.objective_score ?? null,
-    });
-    setAppliedTemporaryDeactivations(candidate.relaxations);
-    setActiveStoredSolution(candidate);
-    setCompareSolutionsOpen(false);
-    goToStep(4);
-  }
+      lecturer_id:
+        candidate.lecturer_id ?? selectedEvent.session.lecturerId,
+    },
+
+    ...candidate.additional_changes.map((change) => ({
+      session_id: change.session_id,
+      new_start: toTimetableDateTime(
+        change.new_day,
+        change.new_time,
+      ),
+      room_id: change.new_room_id,
+    })),
+  ];
+
+  await applyTempTimetable(moves);
+
+  setCompareSolutionsOpen(false);
+  navigate("/");
+
+  console.log("COMMITTING MOVES:", moves);
+
+    try {
+      const result = await applyTempTimetable(moves);
+      console.log("COMMIT SUCCESS:", result);
+
+      setCompareSolutionsOpen(false);
+      navigate("/");
+    } catch (error) {
+      console.error("COMMIT FAILED:", error);
+      alert("Commit failed — check the browser console.");
+    }
+}
 
   const [originalModes, setOriginalModes] = useState<{
     time: "keep" | "specific" | "find";
@@ -1449,6 +1537,64 @@ export function ReschedulePage() {
     };
   }
 
+  function requestContainsFind(request: RescheduleRequest) {
+    return (
+      request.time_mode === "find" ||
+      request.room_mode === "find" ||
+      request.lecturer_mode === "find"
+    );
+  }
+
+  async function runAnyMinimumRelaxation() {
+    if (!selectedEvent) return;
+
+    setAnyRelaxationLoading(true);
+    setAnyRelaxationError(null);
+    setAnyRelaxationResult(null);
+
+    try {
+      const request = buildRescheduleRequest();
+
+      const result = await api.post<AnyMinimumRelaxationResult>(
+        "/solver/reschedule/minimum-relaxations",
+        request,
+      );
+
+      if (result.status !== "feasible") {
+        setAnyRelaxationError(
+          result.reason ?? "No relaxation recovery was found.",
+        );
+        return;
+      }
+
+      if (
+        result.start_slot == null ||
+        !result.day ||
+        !result.time ||
+        !result.room_id ||
+        !result.lecturer_id
+      ) {
+        setAnyRelaxationError(
+          "Relaxation recovery returned an incomplete solution.",
+        );
+        return;
+      }
+
+      // Keep the original infeasible solver result mounted on Step 4.
+      // The ANY relaxation solution is displayed/stored from the recovery card.
+      setAnyRelaxationResult(result);
+    } catch (error) {
+      console.error("Failed to calculate ANY relaxation recovery:", error);
+      setAnyRelaxationError(
+        error instanceof Error
+          ? error.message
+          : "Failed to calculate relaxation recovery.",
+      );
+    } finally {
+      setAnyRelaxationLoading(false);
+    }
+  }
+
   async function loadMinimumPerturbations(request: RescheduleRequest) {
     setMinimumPerturbationLoading(true);
 
@@ -1481,6 +1627,9 @@ export function ReschedulePage() {
     setSolverLoading(true);
     setMinimumPerturbationLoading(false);
     setSolverError(null);
+    setAnyRelaxationResult(null);
+    setAnyRelaxationError(null);
+    setAnyRelaxationLoading(false);
     setAppliedTemporaryDeactivations([]);
     setActiveStoredSolution(null);
     setSolverResult(null);
@@ -1658,111 +1807,16 @@ async function runRescheduleWithAdditionalChanges() {
   setActiveStoredSolution(null);
 
   try {
-    let request: RescheduleRequest;
+    const request: RescheduleRequest = {
+      ...buildRescheduleRequest(),
+      max_additional_changes: null,
+    };
 
-    /*
-     * If the original request used FIND, use the concrete
-     * combination currently selected in Step 4.
-     */
-    if (needsInteractiveDiagnosis && originalModes) {
-      const lecturerId =
-        originalModes.lecturer === "find"
-          ? diagLecturer
-          : selectedLecturer ?? selectedEvent.lecturer?.id ?? null;
-
-      let roomId: string | null = null;
-
-      if (originalModes.room === "find") {
-        roomId = diagRoom;
-      } else if (selectedRoom) {
-        roomId =
-          data?.rooms.find(
-            (room) => room.name === selectedRoom,
-          )?.id ?? null;
-      } else {
-        roomId =
-          data?.rooms.find(
-            (room) =>
-              room.name === selectedEvent.session.room,
-          )?.id ?? null;
-      }
-
-      const day =
-        originalModes.time === "find"
-          ? diagDay
-          : selectedDay ??
-            new Date(
-              selectedEvent.session.start,
-            ).toLocaleDateString("en-US", {
-              weekday: "long",
-            });
-
-      const time =
-        originalModes.time === "find"
-          ? diagTime
-          : selectedTime ??
-            new Date(
-              selectedEvent.session.start,
-            ).toLocaleTimeString("en-US", {
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-            });
-
-      if (!lecturerId || !roomId || !day || !time) {
-        setSolverError(
-          "Could not build the concrete perturbation request.",
-        );
-        return;
-      }
-
-      const requestedStart = buildTimetableLocalStart(
-        selectedEvent.session.start,
-        day,
-        time,
-      );
-
-      if (!requestedStart) {
-        setSolverError(
-          "Could not build the perturbation date.",
-        );
-        return;
-      }
-
-      request = {
-        session_id: selectedEvent.session.id,
-        time_mode: "specific",
-        requested_start: requestedStart,
-        room_mode: "specific",
-        requested_room_id: roomId,
-        lecturer_mode: "specific",
-        requested_lecturer_id: lecturerId,
-        objective_weights: buildObjectiveWeights(),
-        max_additional_changes: null,
-      };
-    } else {
-      request = {
-        ...buildRescheduleRequest(),
-
-        // The minimum-perturbation solver decides the
-        // minimum number itself. There is no user-supplied N.
-        max_additional_changes: null,
-      };
-    }
-
-    console.log(
-      "Running minimum-perturbation recovery:",
-      request,
-    );
-
+    // Concrete and FIND / ANY requests use the same alternatives endpoint.
+    // FIND dimensions remain free solver decision variables in the backend.
     const result = await api.post<PerturbationAlternativesResponse>(
       "/solver/reschedule/perturbation-alternatives",
       request,
-    );
-
-    console.log(
-      "Minimum-perturbation result:",
-      result,
     );
 
     setPerturbationAlternatives(result);
@@ -1772,18 +1826,19 @@ async function runRescheduleWithAdditionalChanges() {
         result.reason ?? "No perturbation recovery could be found.",
       );
     }
+
     setDiagResult(null);
     setDiagError(null);
   } catch (error) {
     console.error(
-      "Failed to run minimum-perturbation recovery:",
+      "Failed to run perturbation alternatives recovery:",
       error,
     );
 
     setSolverError(
       error instanceof Error
         ? error.message
-        : "Failed to find a minimum-perturbation recovery",
+        : "Failed to find perturbation recovery alternatives",
     );
   } finally {
     setRearrangementLoading(false);
@@ -2889,6 +2944,10 @@ async function runRescheduleWithAdditionalChanges() {
               originalModes={originalModes}
               perturbationAlternatives={perturbationAlternatives}
               mixedRecoveryRequest={buildRescheduleRequest()}
+              anyRelaxationResult={anyRelaxationResult}
+              anyRelaxationLoading={anyRelaxationLoading}
+              anyRelaxationError={anyRelaxationError}
+              onFindMinimumRelaxation={runAnyMinimumRelaxation}
               requestedTimeLabel={
                           originalModes?.time === "find"
                             ? "Any suitable time"
@@ -2946,7 +3005,9 @@ async function runRescheduleWithAdditionalChanges() {
               diagError={diagError}
               diagResult={diagResult}
               onBackToRequest={() => setStep(1)}
-              onRetryWithRelaxations={runRescheduleWithRelaxations}
+              onRetryWithRelaxations={(constraints) => {
+                void runRescheduleWithRelaxations(constraints);
+              }}
               onFindRearrangements={runRescheduleWithAdditionalChanges}
               appliedTemporaryDeactivations={appliedTemporaryDeactivations}
               onStoreSolution={storeSolution}

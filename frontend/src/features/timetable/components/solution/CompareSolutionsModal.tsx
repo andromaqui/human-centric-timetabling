@@ -397,7 +397,7 @@ export function CompareSolutionsModal({
                     className="compare-choose-button"
                     onClick={() => onChoose(solution)}
                   >
-                    Choose
+                    Commit solution
                   </button>
                 </div>
 

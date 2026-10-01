@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+import json
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -15,6 +17,28 @@ router = APIRouter(
     tags=["sessions"],
 )
 
+
+TEMP_TIMETABLE_FILE = Path("temp_timetable.json")
+
+
+def load_temp_moves() -> list[dict]:
+    if not TEMP_TIMETABLE_FILE.exists():
+        return []
+
+    with TEMP_TIMETABLE_FILE.open("r") as file:
+        data = json.load(file)
+
+    return data.get("moves", [])
+
+
+def save_temp_moves(moves: list[dict]) -> None:
+    with TEMP_TIMETABLE_FILE.open("w") as file:
+        json.dump({"moves": moves}, file, indent=2)
+
+
+def clear_temp_moves() -> None:
+    if TEMP_TIMETABLE_FILE.exists():
+        TEMP_TIMETABLE_FILE.unlink()
 
 # ============================================================================
 # Temporary working-session representation
@@ -337,6 +361,61 @@ def list_working_sessions_for_day(
     }
 
 
+@router.get(
+    "/temp/",
+    response_model=list[schemas.SessionOut],
+)
+def list_temp_sessions(
+    db: Session = Depends(get_db),
+):
+    sessions = db.query(models.Session).all()
+    moves = load_temp_moves()
+
+    if not moves:
+        return [_to_session_out(session) for session in sessions]
+
+    move_by_id = {
+        move["session_id"]: move
+        for move in moves
+    }
+
+    results = []
+
+    for session in sessions:
+        move = move_by_id.get(session.id)
+
+        if not move:
+            results.append(_to_session_out(session))
+            continue
+
+        duration = session.end - session.start
+
+        new_start = datetime.fromisoformat(move["new_start"])
+        new_end = new_start + duration
+
+        room_id = move.get("room_id", session.room_id)
+        lecturer_id = move.get("lecturer_id", session.lecturer_id)
+
+        room = db.get(models.Room, room_id) if room_id else None
+
+        results.append(
+            schemas.SessionOut(
+                id=session.id,
+                module_id=session.module_id,
+                lecturer_id=lecturer_id,
+                room_id=room_id,
+                room_name=room.name if room else None,
+                type=session.type,
+                start=new_start,
+                end=new_end,
+                program_ids=[p.id for p in session.programs],
+                cohort_ids=[c.id for c in session.cohorts],
+            )
+        )
+
+    return results
+
+
 # ============================================================================
 # Session constraint endpoints
 # ============================================================================
@@ -370,3 +449,25 @@ def list_session_constraints(
         )
         .all()
     )
+
+
+@router.post("/temp/apply")
+def apply_temp_timetable(payload: dict):
+    moves = payload.get("moves", [])
+
+    save_temp_moves(moves)
+
+    return {
+        "status": "ok",
+        "moves_saved": len(moves),
+    }
+
+
+@router.delete("/temp/")
+def reset_temp_timetable():
+    clear_temp_moves()
+
+    return {
+        "status": "ok",
+        "message": "Timetable reset to original state",
+    }

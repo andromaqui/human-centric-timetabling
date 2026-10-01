@@ -4961,3 +4961,910 @@ def solve_reschedule_min_perturbation(
     }
 # endregion
 
+# region ANY Relaxation Recovery
+
+def is_constraint_protected(
+    protected_constraints,
+    *,
+    constraint_id,
+    instance_type,
+    instance_id,
+    day=None,
+):
+    for item in protected_constraints or []:
+        item_constraint_id = getattr(item, "constraint_id", None)
+        item_instance_type = getattr(item, "instance_type", None)
+        item_instance_id = getattr(item, "instance_id", None)
+        item_day = getattr(item, "day", None)
+
+        if item_constraint_id != constraint_id:
+            continue
+        if item_instance_type != instance_type:
+            continue
+        if item_instance_id != instance_id:
+            continue
+        if not _days_match(item_day, day):
+            continue
+
+        return True
+
+    return False
+
+
+def request_contains_find(request: RescheduleRequestIn,) -> bool:
+    return (
+        request.time_mode == ChangeMode.FIND
+        or request.room_mode == ChangeMode.FIND
+        or request.lecturer_mode == ChangeMode.FIND
+    )
+
+
+def _relaxation_key(constraint_id, instance_type, instance_id, day=None):
+    return (
+        constraint_id,
+        instance_type,
+        instance_id,
+        day.lower() if isinstance(day, str) else day,
+    )
+
+
+def _new_relaxation_var(
+    model,
+    relaxation_vars,
+    relaxation_metadata,
+    protected_constraints,
+    *,
+    constraint_id,
+    instance_type,
+    instance_id,
+    day=None,
+):
+    """
+    Create one Boolean per relaxable constraint instance.
+
+    0 = the constraint remains enforced.
+    1 = the solver may violate this constraint.
+
+    Protected instances are fixed to 0.
+    """
+    key = _relaxation_key(
+        constraint_id,
+        instance_type,
+        instance_id,
+        day,
+    )
+
+    if key in relaxation_vars:
+        return relaxation_vars[key]
+
+    safe_day = (day or "all").replace(" ", "_")
+    var = model.NewBoolVar(
+        "mixed_relax_"
+        f"{constraint_id}_{instance_type}_{instance_id}_{safe_day}"
+    )
+
+    print(
+        "\n[MIXED PROTECTION CHECK]",
+        {
+            "candidate": {
+                "constraint_id": constraint_id,
+                "instance_type": instance_type,
+                "instance_id": instance_id,
+                "day": day,
+            },
+        },
+    )
+
+    if is_constraint_protected(
+        protected_constraints,
+        constraint_id=constraint_id,
+        instance_type=instance_type,
+        instance_id=instance_id,
+        day=day,
+    ):
+        model.Add(var == 0)
+
+    relaxation_vars[key] = var
+    relaxation_metadata[key] = {
+        "constraint_id": constraint_id,
+        "instance_type": instance_type,
+        "instance_id": instance_id,
+        "day": day,
+    }
+    return var
+
+
+def _add_relaxable_capacity_constraints(
+    model,
+    all_sessions,
+    room_vars,
+    rooms,
+    active_capacity_sessions,
+    baseline_violation_keys,
+    protected_constraints,
+    relaxation_vars,
+    relaxation_metadata,
+):
+    sessions_by_id = {session.id: session for session in all_sessions}
+
+    for session_id in active_capacity_sessions:
+        session = sessions_by_id.get(session_id)
+        if session is None:
+            continue
+
+        required_capacity = session.module.required_capacity
+        if required_capacity is None:
+            continue
+
+        relax_var = _new_relaxation_var(
+            model,
+            relaxation_vars,
+            relaxation_metadata,
+            protected_constraints,
+            constraint_id="class-capacity",
+            instance_type="session",
+            instance_id=session_id,
+            day=None,
+        )
+
+        for room_index, room in enumerate(rooms):
+            normally_valid = room.capacity >= required_capacity
+            baseline_key = ("class_capacity", session_id, room.id)
+            grandfathered = baseline_key in baseline_violation_keys
+
+            if normally_valid or grandfathered:
+                continue
+
+            # An invalid NEW room assignment is possible only when this
+            # exact capacity constraint is relaxed.
+            model.Add(
+                room_vars[session_id] != room_index
+            ).OnlyEnforceIf(relax_var.Not())
+
+
+def _add_relaxable_equipment_constraints(
+    model,
+    all_sessions,
+    room_vars,
+    rooms,
+    active_equipment_sessions,
+    baseline_violation_keys,
+    protected_constraints,
+    relaxation_vars,
+    relaxation_metadata,
+):
+    sessions_by_id = {session.id: session for session in all_sessions}
+
+    for session_id in active_equipment_sessions:
+        session = sessions_by_id.get(session_id)
+        if session is None or not session.module.required_equipment:
+            continue
+
+        required = {
+            value.strip().lower()
+            for value in session.module.required_equipment.split(",")
+            if value.strip()
+        }
+
+        relax_var = _new_relaxation_var(
+            model,
+            relaxation_vars,
+            relaxation_metadata,
+            protected_constraints,
+            constraint_id="class-equipment",
+            instance_type="session",
+            instance_id=session_id,
+            day=None,
+        )
+
+        for room_index, room in enumerate(rooms):
+            available = {
+                value.strip().lower()
+                for value in (room.equipment or "").split(",")
+                if value.strip()
+            }
+
+            normally_valid = required.issubset(available)
+            baseline_key = ("class_equipment", session_id, room.id)
+            grandfathered = baseline_key in baseline_violation_keys
+
+            if normally_valid or grandfathered:
+                continue
+
+            model.Add(
+                room_vars[session_id] != room_index
+            ).OnlyEnforceIf(relax_var.Not())
+
+
+def _add_relaxable_cohort_daily_constraints(
+    model,
+    all_sessions,
+    start_vars,
+    cohort_daily_constraints,
+    baseline_context,
+    protected_constraints,
+    relaxation_vars,
+    relaxation_metadata,
+):
+    baseline_limits = baseline_context["cohort_daily_limits"]
+
+    for constraint in cohort_daily_constraints:
+        if constraint.day is None:
+            continue
+
+        cohort_id = constraint.cohort_id
+        day = constraint.day.lower()
+        day_index = DAY_TO_INDEX[day]
+        allowed_limit = baseline_limits.get(
+            (cohort_id, day),
+            COHORT_MAX_HOURS_PER_DAY,
+        )
+
+        relax_var = _new_relaxation_var(
+            model,
+            relaxation_vars,
+            relaxation_metadata,
+            protected_constraints,
+            constraint_id=constraint.constraint_id,
+            instance_type="cohort",
+            instance_id=cohort_id,
+            day=constraint.day,
+        )
+
+        terms = []
+
+        for session in all_sessions:
+            if not any(
+                cohort.id == cohort_id
+                for cohort in session.cohorts
+            ):
+                continue
+
+            session_day = model.NewIntVar(
+                0,
+                4,
+                f"mixed_cohort_day_{session.id}_{cohort_id}_{day}",
+            )
+            is_on_day = model.NewBoolVar(
+                f"mixed_cohort_on_day_{session.id}_{cohort_id}_{day}"
+            )
+
+            model.AddDivisionEquality(
+                session_day,
+                start_vars[session.id],
+                SLOTS_PER_DAY,
+            )
+            model.Add(
+                session_day == day_index
+            ).OnlyEnforceIf(is_on_day)
+            model.Add(
+                session_day != day_index
+            ).OnlyEnforceIf(is_on_day.Not())
+
+            terms.append(get_duration_slots(session) * is_on_day)
+
+        if terms:
+            model.Add(
+                sum(terms) <= allowed_limit
+            ).OnlyEnforceIf(relax_var.Not())
+
+
+def _add_relaxable_lecturer_daily_constraints(
+    model,
+    all_sessions,
+    start_vars,
+    lecturer_vars,
+    lecturer_id_to_index,
+    lecturer_daily_constraints,
+    baseline_context,
+    protected_constraints,
+    relaxation_vars,
+    relaxation_metadata,
+):
+    baseline_limits = baseline_context["lecturer_daily_limits"]
+
+    for constraint in lecturer_daily_constraints:
+        if constraint.day is None:
+            continue
+
+        lecturer_id = constraint.lecturer_id
+        if lecturer_id not in lecturer_id_to_index:
+            continue
+
+        lecturer_index = lecturer_id_to_index[lecturer_id]
+        day = constraint.day.lower()
+        day_index = DAY_TO_INDEX[day]
+        allowed_limit = baseline_limits.get(
+            (lecturer_id, day),
+            LECTURER_MAX_HOURS_PER_DAY,
+        )
+
+        relax_var = _new_relaxation_var(
+            model,
+            relaxation_vars,
+            relaxation_metadata,
+            protected_constraints,
+            constraint_id=constraint.constraint_id,
+            instance_type="lecturer",
+            instance_id=lecturer_id,
+            day=constraint.day,
+        )
+
+        terms = []
+
+        for session in all_sessions:
+            assigned = model.NewBoolVar(
+                f"mixed_daily_assigned_{session.id}_{lecturer_id}_{day}"
+            )
+            session_day = model.NewIntVar(
+                0,
+                4,
+                f"mixed_daily_day_{session.id}_{lecturer_id}_{day}",
+            )
+            is_on_day = model.NewBoolVar(
+                f"mixed_daily_on_day_{session.id}_{lecturer_id}_{day}"
+            )
+            counts = model.NewBoolVar(
+                f"mixed_daily_counts_{session.id}_{lecturer_id}_{day}"
+            )
+
+            model.Add(
+                lecturer_vars[session.id] == lecturer_index
+            ).OnlyEnforceIf(assigned)
+            model.Add(
+                lecturer_vars[session.id] != lecturer_index
+            ).OnlyEnforceIf(assigned.Not())
+
+            model.AddDivisionEquality(
+                session_day,
+                start_vars[session.id],
+                SLOTS_PER_DAY,
+            )
+            model.Add(
+                session_day == day_index
+            ).OnlyEnforceIf(is_on_day)
+            model.Add(
+                session_day != day_index
+            ).OnlyEnforceIf(is_on_day.Not())
+
+            model.AddBoolAnd([
+                assigned,
+                is_on_day,
+            ]).OnlyEnforceIf(counts)
+            model.AddBoolOr([
+                assigned.Not(),
+                is_on_day.Not(),
+            ]).OnlyEnforceIf(counts.Not())
+
+            terms.append(get_duration_slots(session) * counts)
+
+        if terms:
+            model.Add(
+                sum(terms) <= allowed_limit
+            ).OnlyEnforceIf(relax_var.Not())
+
+
+def _add_relaxable_lecturer_lunch_constraints(
+    model,
+    all_sessions,
+    start_vars,
+    lecturer_vars,
+    lecturer_id_to_index,
+    lecturer_lunch_constraints,
+    baseline_violation_keys,
+    protected_constraints,
+    relaxation_vars,
+    relaxation_metadata,
+):
+    """
+    Preserve the existing baseline-aware lunch semantics:
+    an already-existing lunch violation is grandfathered and therefore
+    does not count as a new relaxation.
+
+    Otherwise, at least one of 12:00-13:00 or 13:00-14:00 must remain
+    free unless the corresponding relaxation variable is activated.
+    """
+    lunch_vars = {}
+
+    for constraint in lecturer_lunch_constraints:
+        if constraint.day is None:
+            continue
+
+        lecturer_id = constraint.lecturer_id
+        if lecturer_id not in lecturer_id_to_index:
+            continue
+
+        day = constraint.day.lower()
+        baseline_key = ("lecturer_lunch_break", lecturer_id, day)
+
+        # Existing violation may remain without consuming a new relaxation.
+        if baseline_key in baseline_violation_keys:
+            continue
+
+        lecturer_index = lecturer_id_to_index[lecturer_id]
+        relax_var = _new_relaxation_var(
+            model,
+            relaxation_vars,
+            relaxation_metadata,
+            protected_constraints,
+            constraint_id=constraint.constraint_id,
+            instance_type="lecturer",
+            instance_id=lecturer_id,
+            day=constraint.day,
+        )
+
+        lunch_slots = [
+            day_time_to_slot(day, "12:00"),
+            day_time_to_slot(day, "13:00"),
+        ]
+        blocked_vars = []
+
+        for lunch_slot in lunch_slots:
+            blockers = []
+
+            for session in all_sessions:
+                duration = get_duration_slots(session)
+
+                assigned = model.NewBoolVar(
+                    f"mixed_lunch_assigned_{session.id}_{lecturer_id}_{day}_{lunch_slot}"
+                )
+                model.Add(
+                    lecturer_vars[session.id] == lecturer_index
+                ).OnlyEnforceIf(assigned)
+                model.Add(
+                    lecturer_vars[session.id] != lecturer_index
+                ).OnlyEnforceIf(assigned.Not())
+
+                possible_starts = [
+                    start
+                    for start in get_valid_start_slots(duration)
+                    if start <= lunch_slot < start + duration
+                ]
+
+                if not possible_starts:
+                    continue
+
+                overlaps = model.NewBoolVar(
+                    f"mixed_lunch_overlap_{session.id}_{day}_{lunch_slot}"
+                )
+                model.AddAllowedAssignments(
+                    [start_vars[session.id]],
+                    [[start] for start in possible_starts],
+                ).OnlyEnforceIf(overlaps)
+                model.AddForbiddenAssignments(
+                    [start_vars[session.id]],
+                    [[start] for start in possible_starts],
+                ).OnlyEnforceIf(overlaps.Not())
+
+                blocks = model.NewBoolVar(
+                    f"mixed_lunch_blocks_{session.id}_{lecturer_id}_{day}_{lunch_slot}"
+                )
+                model.AddBoolAnd([
+                    assigned,
+                    overlaps,
+                ]).OnlyEnforceIf(blocks)
+                model.AddBoolOr([
+                    assigned.Not(),
+                    overlaps.Not(),
+                ]).OnlyEnforceIf(blocks.Not())
+                blockers.append(blocks)
+
+            blocked = model.NewBoolVar(
+                f"mixed_lunch_slot_blocked_{lecturer_id}_{day}_{lunch_slot}"
+            )
+
+            if blockers:
+                model.AddMaxEquality(blocked, blockers)
+            else:
+                model.Add(blocked == 0)
+
+            blocked_vars.append(blocked)
+
+        # If not relaxed, both lunch hours may not be blocked.
+        model.Add(
+            sum(blocked_vars) <= 1
+        ).OnlyEnforceIf(relax_var.Not())
+
+        # Keep a lunch-slot variable for the quality objective.
+        # When the lunch constraint is enforced, this slot must be free.
+        lunch_start = model.NewIntVarFromDomain(
+            cp_model.Domain.FromValues(lunch_slots),
+            f"mixed_lunch_choice_{lecturer_id}_{day}",
+        )
+
+        choose_first = model.NewBoolVar(
+            f"mixed_choose_lunch_12_{lecturer_id}_{day}"
+        )
+        choose_second = model.NewBoolVar(
+            f"mixed_choose_lunch_13_{lecturer_id}_{day}"
+        )
+
+        model.Add(lunch_start == lunch_slots[0]).OnlyEnforceIf(choose_first)
+        model.Add(lunch_start != lunch_slots[0]).OnlyEnforceIf(choose_first.Not())
+        model.Add(lunch_start == lunch_slots[1]).OnlyEnforceIf(choose_second)
+        model.Add(lunch_start != lunch_slots[1]).OnlyEnforceIf(choose_second.Not())
+
+        # If the lunch constraint is active, the chosen lunch slot must
+        # be one of the free lunch hours.
+        model.Add(blocked_vars[0] == 0).OnlyEnforceIf(
+            [relax_var.Not(), choose_first]
+        )
+        model.Add(blocked_vars[1] == 0).OnlyEnforceIf(
+            [relax_var.Not(), choose_second]
+        )
+
+        lunch_vars[(lecturer_id, DAY_TO_INDEX[day])] = (
+            lunch_start,
+            relax_var,
+        )
+
+    return lunch_vars
+
+
+def solve_reschedule_min_relaxation_any(
+    request: RescheduleRequestIn,
+    db,
+):
+    """
+    Relaxation-only recovery for requests containing FIND.
+
+    Other sessions remain completely fixed.
+    FIND dimensions of the target remain solver variables.
+    Hard constraints remain enforced.
+    Objective: minimise the number of relaxed constraints.
+    """
+
+    # --------------------------------------------------------------
+    # Prepare request
+    # --------------------------------------------------------------
+    pre_solve = build_pre_solve_context(request, db)
+
+    if pre_solve["status"] != "ready":
+        return pre_solve
+
+    if not request_contains_find(request):
+        return {
+            "status": "invalid",
+            "reason": "ANY relaxation recovery requires at least one FIND field",
+        }
+
+    target_session: Session = pre_solve["target_session"]
+    change_plan = pre_solve["change_plan"]
+    other_sessions = pre_solve["other_sessions"]
+
+    # Preserve the existing baseline-aware recovery behaviour.
+    corruption = check_timetable_integrity(db)
+    if corruption is not None:
+        return corruption
+
+    baseline_violations = get_existing_breakable_violations(db)
+    baseline_context = build_baseline_violation_context(
+        baseline_violations
+    )
+    baseline_violation_keys = baseline_context["keys"]
+
+    rooms = get_rooms(db)
+    lecturers = get_lecturers(db)
+    unavailability_rows = get_all_lecturer_unavailability(db)
+
+    active_capacity_sessions = (
+        get_active_class_capacity_sessions(db)
+    )
+    active_equipment_sessions = (
+        get_active_class_equipment_sessions(db)
+    )
+    cohort_daily_constraints = (
+        get_active_cohort_daily_hour_constraints(db)
+    )
+    lecturer_daily_constraints = (
+        get_active_lecturer_daily_hour_constraints(db)
+    )
+    lecturer_lunch_constraints = (
+        get_active_lecturer_lunch_constraints(db)
+    )
+
+    # --------------------------------------------------------------
+    # Model
+    # --------------------------------------------------------------
+    model = cp_model.CpModel()
+    all_sessions = [*other_sessions, target_session]
+
+    room_id_to_index, index_to_room_id = build_room_mappings(
+        rooms
+    )
+    lecturer_id_to_index, index_to_lecturer_id = (
+        build_lecturer_mappings(lecturers)
+    )
+
+    start_vars = {}
+    room_vars = {}
+    lecturer_vars = {}
+
+    for session in all_sessions:
+        valid_start_slots = get_valid_start_slots(
+            get_duration_slots(session)
+        )
+
+        start_vars[session.id] = model.NewIntVarFromDomain(
+            cp_model.Domain.FromValues(valid_start_slots),
+            f"any_relax_start_{session.id}",
+        )
+
+        room_vars[session.id] = model.NewIntVar(
+            0,
+            len(rooms) - 1,
+            f"any_relax_room_{session.id}",
+        )
+
+        lecturer_vars[session.id] = model.NewIntVar(
+            0,
+            len(lecturers) - 1,
+            f"any_relax_lecturer_{session.id}",
+        )
+
+    # --------------------------------------------------------------
+    # Freeze every OTHER session
+    # --------------------------------------------------------------
+    for session in other_sessions:
+        model.Add(
+            start_vars[session.id]
+            == datetime_to_slot(session.start)
+        )
+
+        model.Add(
+            room_vars[session.id]
+            == room_id_to_index[session.room_id]
+        )
+
+        model.Add(
+            lecturer_vars[session.id]
+            == lecturer_id_to_index[session.lecturer_id]
+        )
+
+    # --------------------------------------------------------------
+    # Apply target request
+    # --------------------------------------------------------------
+    target_id = target_session.id
+
+    # Time
+    if change_plan["time"]["mode"] == ChangeMode.KEEP:
+        model.Add(
+            start_vars[target_id]
+            == datetime_to_slot(target_session.start)
+        )
+
+    elif change_plan["time"]["mode"] == ChangeMode.SPECIFIC:
+        requested_start = parse_requested_start(
+            change_plan["time"]["target"]
+        )
+
+        model.Add(
+            start_vars[target_id]
+            == datetime_to_slot(requested_start)
+        )
+
+    elif change_plan["time"]["mode"] == ChangeMode.FIND:
+        model.Add(
+            start_vars[target_id]
+            != datetime_to_slot(target_session.start)
+        )
+
+    # Room
+    if change_plan["room"]["mode"] == ChangeMode.KEEP:
+        model.Add(
+            room_vars[target_id]
+            == room_id_to_index[target_session.room_id]
+        )
+
+    elif change_plan["room"]["mode"] == ChangeMode.SPECIFIC:
+        model.Add(
+            room_vars[target_id]
+            == room_id_to_index[
+                change_plan["room"]["target"]
+            ]
+        )
+
+    elif (
+        change_plan["room"]["mode"] == ChangeMode.FIND
+        and target_session.room_id is not None
+    ):
+        model.Add(
+            room_vars[target_id]
+            != room_id_to_index[target_session.room_id]
+        )
+
+    # Lecturer
+    if change_plan["lecturer"]["mode"] == ChangeMode.KEEP:
+        model.Add(
+            lecturer_vars[target_id]
+            == lecturer_id_to_index[
+                target_session.lecturer_id
+            ]
+        )
+
+    elif change_plan["lecturer"]["mode"] == ChangeMode.SPECIFIC:
+        model.Add(
+            lecturer_vars[target_id]
+            == lecturer_id_to_index[
+                change_plan["lecturer"]["target"]
+            ]
+        )
+
+    elif change_plan["lecturer"]["mode"] == ChangeMode.FIND:
+        model.Add(
+            lecturer_vars[target_id]
+            != lecturer_id_to_index[
+                target_session.lecturer_id
+            ]
+        )
+
+    # --------------------------------------------------------------
+    # HARD constraints — never relax these
+    # --------------------------------------------------------------
+    add_room_no_overlap_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        room_vars,
+    )
+
+    add_lecturer_no_overlap_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        lecturer_vars,
+    )
+
+    add_lecturer_unavailability_constraint(
+        model,
+        all_sessions,
+        start_vars,
+        lecturer_vars,
+        lecturer_id_to_index,
+        unavailability_rows,
+    )
+
+    # --------------------------------------------------------------
+    # Relaxable constraints
+    # --------------------------------------------------------------
+    relaxation_vars = {}
+    relaxation_metadata = {}
+
+    # No constraints are protected for the minimum-relaxation search.
+    protected_constraints = []
+
+    _add_relaxable_capacity_constraints(
+        model,
+        all_sessions,
+        room_vars,
+        rooms,
+        active_capacity_sessions,
+        baseline_violation_keys,
+        protected_constraints,
+        relaxation_vars,
+        relaxation_metadata,
+    )
+
+    _add_relaxable_equipment_constraints(
+        model,
+        all_sessions,
+        room_vars,
+        rooms,
+        active_equipment_sessions,
+        baseline_violation_keys,
+        protected_constraints,
+        relaxation_vars,
+        relaxation_metadata,
+    )
+
+    _add_relaxable_cohort_daily_constraints(
+        model,
+        all_sessions,
+        start_vars,
+        cohort_daily_constraints,
+        baseline_context,
+        protected_constraints,
+        relaxation_vars,
+        relaxation_metadata,
+    )
+
+    _add_relaxable_lecturer_daily_constraints(
+        model,
+        all_sessions,
+        start_vars,
+        lecturer_vars,
+        lecturer_id_to_index,
+        lecturer_daily_constraints,
+        baseline_context,
+        protected_constraints,
+        relaxation_vars,
+        relaxation_metadata,
+    )
+
+    _add_relaxable_lecturer_lunch_constraints(
+        model,
+        all_sessions,
+        start_vars,
+        lecturer_vars,
+        lecturer_id_to_index,
+        lecturer_lunch_constraints,
+        baseline_violation_keys,
+        protected_constraints,
+        relaxation_vars,
+        relaxation_metadata,
+    )
+
+    # --------------------------------------------------------------
+    # Objective: MINIMUM relaxations
+    # --------------------------------------------------------------
+    if relaxation_vars:
+        model.Minimize(
+            sum(relaxation_vars.values())
+        )
+
+    # --------------------------------------------------------------
+    # Solve
+    # --------------------------------------------------------------
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+
+    if status not in (
+        cp_model.OPTIMAL,
+        cp_model.FEASIBLE,
+    ):
+        return {
+            "status": "infeasible",
+            "reason": (
+                "No relaxation-only recovery exists "
+                "for this ANY request"
+            ),
+            "minimum_relaxations": None,
+            "relaxations": [],
+        }
+
+    # --------------------------------------------------------------
+    # Selected primary placement
+    # --------------------------------------------------------------
+    solved_start_slot = solver.Value(
+        start_vars[target_id]
+    )
+
+    solved_time = slot_to_day_time(
+        solved_start_slot
+    )
+
+    solved_room_index = solver.Value(
+        room_vars[target_id]
+    )
+
+    solved_lecturer_index = solver.Value(
+        lecturer_vars[target_id]
+    )
+
+    # --------------------------------------------------------------
+    # Which constraints were relaxed?
+    # --------------------------------------------------------------
+    used_relaxations = [
+        relaxation_metadata[key]
+        for key, var in relaxation_vars.items()
+        if solver.Value(var) == 1
+    ]
+
+    return {
+        "status": "feasible",
+
+        "minimum_relaxations": len(used_relaxations),
+        "relaxations": used_relaxations,
+
+        # Chosen placement of the PRIMARY class.
+        "start_slot": solved_start_slot,
+        "day": solved_time["day"],
+        "time": solved_time["time"],
+        "room_id": index_to_room_id[
+            solved_room_index
+        ],
+        "lecturer_id": index_to_lecturer_id[
+            solved_lecturer_index
+        ],
+    }
+# endregion

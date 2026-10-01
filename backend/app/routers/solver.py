@@ -9,6 +9,8 @@ from app.solver.reschedule import (
     get_proposed_values,
     diagnose_specific_request,
     get_session,
+    request_contains_find,
+    solve_reschedule_min_relaxation_any,
 )
 from app.solver.perturbation_alternatives import (
     find_perturbation_alternatives,
@@ -27,6 +29,21 @@ def reschedule(request: RescheduleRequestIn, db: Session = Depends(get_db)):
     print("request")
     print(request)
     return solve_reschedule(request, db)
+
+
+# used only by ANY
+@router.post("/reschedule/minimum-relaxations")
+def minimum_relaxations(
+    request: RescheduleRequestIn,
+    db: Session = Depends(get_db),
+):
+    if not request_contains_find(request):
+        return {
+            "status": "invalid",
+            "reason": "This calculation is only for requests containing ANY.",
+        }
+
+    return solve_reschedule_min_relaxation_any(request, db)
 
 
 @router.post("/reschedule/minimum-perturbations")
