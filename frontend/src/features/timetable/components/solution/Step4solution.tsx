@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { StakeholderViolationsPanel } from "./StakeholderViolationsPanel";
+import { AnyRequestExplanation } from "./AnyRequestExplanation";
 import { HistoricalImpactSummary } from "../../../impact/components/HistoricalImpactSummary";
 import { api } from "../../../../shared/api/client";
 import { PerturbationImpactModal, type PerturbationImpact,} from "./PerturbationImpactModal";
@@ -26,6 +27,7 @@ import {
 import "./Step4solution.css";
 import { RequestedChangeSummary } from "../RequestedChangeSummary";
 import { RoomCapacityVisualisation } from "./RoomCapacityVisualisation";
+import { RoomSuitability } from "../RoomSuitability";
 import { CohortGapVisualisation } from "./CohortGapVisualisation";
 import { CohortRoomChangeVisualisation } from "./CohortRoomChangeVisualisation";
 
@@ -56,6 +58,18 @@ type Violation = {
 type Diagnostics = {
   violations: Violation[];
   overlapping_sessions: string[];
+};
+
+type SearchSpaceDiagnosis = {
+  key: string;
+  day: string;
+  time: string;
+  roomId: string;
+  roomName: string;
+  lecturerId: string;
+  lecturerName: string;
+  diagnostics: Diagnostics | null;
+  error: string | null;
 };
 
 
@@ -213,6 +227,7 @@ type NamedEntity = {
   id: string;
   name: string;
   capacity?: number;
+  equipment?: string[] | string;
 };
 
 type ModuleLike = {
@@ -222,6 +237,8 @@ type ModuleLike = {
   title?: string;
   requiredCapacity?: number | null;
   required_capacity?: number | null;
+  requiredEquipment?: string[] | string;
+  required_equipment?: string[] | string | null;
 };
 
 
@@ -502,6 +519,78 @@ export function Step4Solution({
   ] = useState<RecoveryOption | null>(null);
 
   const [explanationOpen, setExplanationOpen] = useState(true);
+
+  // Room/module equipment may arrive either as arrays or as the comma-separated
+  // strings used by the backend seed. Normalise both forms before rendering.
+  function normaliseEquipment(value: string[] | string | null | undefined): string[] {
+    const values = Array.isArray(value) ? value : value ? [value] : [];
+
+    return values
+      .flatMap((item) => item.split(","))
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function renderRoomSuitabilityForViolations(violations: Violation[]) {
+    const roomViolations = violations.filter(
+      (violation) =>
+        violation.type === "class_capacity" ||
+        violation.type === "class_equipment",
+    );
+
+    if (roomViolations.length === 0) return null;
+
+    const capacityViolated = roomViolations.some(
+      (violation) => violation.type === "class_capacity",
+    );
+
+    const equipmentViolated = roomViolations.some(
+      (violation) => violation.type === "class_equipment",
+    );
+
+    const roomViolation = roomViolations[0];
+
+    const targetSession = sessions.find(
+      (session) => session.id === (roomViolation.session_id ?? excludeSessionId),
+    );
+
+    const targetModule = modules.find(
+      (module) => module.id === targetSession?.moduleId,
+    );
+
+    const room =
+      rooms.find((item) => item.id === roomViolation.room_id) ??
+      rooms.find((item) => item.name === getRoomName(roomViolation.room_id));
+
+    if (!room || !targetModule) return null;
+
+    const requiredCapacity =
+      targetModule.requiredCapacity ??
+      targetModule.required_capacity ??
+      roomViolation.required_capacity;
+
+    if (requiredCapacity == null || room.capacity == null) return null;
+
+    return (
+      <div style={{ marginTop: "16px" }}>
+        <RoomSuitability
+          roomName={room.name}
+          roomCapacity={room.capacity}
+          roomEquipment={normaliseEquipment(room.equipment)}
+          studentCount={requiredCapacity}
+          requiredEquipment={normaliseEquipment(
+            targetModule.requiredEquipment ??
+              targetModule.required_equipment,
+          )}
+          capacityViolated={capacityViolated}
+          equipmentViolated={equipmentViolated}
+        />
+      </div>
+    );
+  }
+  const [searchSpaceLoading, setSearchSpaceLoading] = useState(false);
+  const [searchSpaceError, setSearchSpaceError] = useState<string | null>(null);
+  const [searchSpaceResults, setSearchSpaceResults] = useState<SearchSpaceDiagnosis[]>([]);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [perturbationResultsMinimized, setPerturbationResultsMinimized] = useState(false);
   const [mixedResultsMinimized, setMixedResultsMinimized] = useState(false);
@@ -912,6 +1001,106 @@ async function findMixedRecoverySolution() {
 }
 
 
+  function buildFindCandidateStart(day: string, time: string): string | null {
+    const target = sessions.find((session) => session.id === excludeSessionId);
+    if (!target?.start) return null;
+
+    const base = new Date(target.start);
+    if (Number.isNaN(base.getTime())) return null;
+
+    const dayIndex: Record<string, number> = {
+      sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+      thursday: 4, friday: 5, saturday: 6,
+    };
+    const wanted = dayIndex[day.toLowerCase()];
+    if (wanted == null) return null;
+
+    const delta = wanted - base.getDay();
+    base.setDate(base.getDate() + delta);
+    const [hours, minutes] = time.split(":").map(Number);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+    base.setHours(hours, minutes, 0, 0);
+    return base.toISOString();
+  }
+
+  async function loadSearchSpaceDiagnosis() {
+    if (!originalModes || !needsInteractiveDiagnosis || searchSpaceLoading) return;
+
+    setSearchSpaceLoading(true);
+    setSearchSpaceError(null);
+
+    try {
+      /*
+       * Diagnose the entire FIND/ANY search space in one backend request.
+       *
+       * Important: mixedRecoveryRequest may contain concrete values selected
+       * elsewhere in the UI, so restore the original request modes here.
+       * The backend is responsible for enumerating FIND dimensions.
+       */
+      const response = await api.post<{
+        status: string;
+        reason?: string | null;
+        candidate_count: number;
+        feasible_candidate_count: number;
+        infeasible_candidate_count: number;
+        total_violation_instances: number;
+        summary: Array<{
+          type: string;
+          affected_candidates: number;
+        }>;
+        candidates: Array<{
+          start_slot: number;
+          day: string;
+          time: string;
+          proposed_start: string;
+          room_id: string;
+          lecturer_id: string;
+          violation_count: number;
+          violations: Violation[];
+          overlapping_sessions: string[];
+        }>;
+      }>("/solver/diagnose-search-space", {
+        ...mixedRecoveryRequest,
+        time_mode: originalModes.time,
+        room_mode: originalModes.room,
+        lecturer_mode: originalModes.lecturer,
+      });
+
+      if (response.status !== "diagnosed") {
+        throw new Error(
+          response.reason ?? "Could not diagnose the FIND search space.",
+        );
+      }
+
+      const results: SearchSpaceDiagnosis[] = response.candidates.map(
+        (candidate) => ({
+          key: `${candidate.day}:${candidate.time}:${candidate.room_id}:${candidate.lecturer_id}`,
+          day: candidate.day,
+          time: candidate.time,
+          roomId: candidate.room_id,
+          roomName: getRoomName(candidate.room_id),
+          lecturerId: candidate.lecturer_id,
+          lecturerName: getLecturerName(candidate.lecturer_id),
+          diagnostics: {
+            violations: candidate.violations,
+            overlapping_sessions: candidate.overlapping_sessions,
+          },
+          error: null,
+        }),
+      );
+
+      setSearchSpaceResults(results);
+    } catch (error) {
+      setSearchSpaceError(
+        error instanceof Error
+          ? error.message
+          : "Could not diagnose the search space.",
+      );
+    } finally {
+      setSearchSpaceLoading(false);
+    }
+  }
+
   /*
    * For a concrete request we use the solver diagnostics.
    *
@@ -947,6 +1136,11 @@ async function findMixedRecoverySolution() {
     () => JSON.stringify(mixedRecoveryRequest),
     [mixedRecoveryRequest],
   );
+
+  useEffect(() => {
+    setSearchSpaceResults([]);
+    setSearchSpaceError(null);
+  }, [mixedRecoveryRequestKey]);
 
   useEffect(() => {
     setMixedGuidance(null);
@@ -1126,8 +1320,13 @@ const checkingPerturbations =
   !needsInteractiveDiagnosis &&
   (minimumPerturbationLoading || perturbationAvailability === null);
 
+const perturbationSearchUnavailable =
+  perturbationAlternatives !== null &&
+  perturbationAlternatives.status !== "feasible";
+
 const canRearrange =
   solverResult?.status === "infeasible" &&
+  !perturbationSearchUnavailable &&
   (
     requestContainsFind ||
     (!needsInteractiveDiagnosis && perturbationAvailability === true)
@@ -2160,279 +2359,49 @@ function getAdditionalChangeSessionLabel(
                       isRelaxableViolation={
                         isRelaxableViolation
                       }
+                      renderRoomSuitability={renderRoomSuitabilityForViolations}
                     />
                   </div>
                 )}
 
 
-              {/* CASE B */}
+              {/* FIND / ANY explanation study views */}
 
-              {needsInteractiveDiagnosis &&
-                originalModes && (
-                  <div className="interactive-diagnosis">
-                    <p className="step-description">
-                      Because you asked the
-                      system to{" "}
-                      <strong>
-                        find
-                      </strong>{" "}
-                      a value, pick concrete
-                      options below to see
-                      why each combination
-                      fails.
-                    </p>
-
-
-                    <div className="diag-dropdowns">
-
-                      {originalModes.lecturer ===
-                        "find" && (
-                        <div>
-                          <label>
-                            Lecturer
-                          </label>
-
-                          <select
-                            value={
-                              diagLecturer ??
-                              ""
-                            }
-                            onChange={(
-                              e,
-                            ) =>
-                              onDiagLecturerChange(
-                                e.target
-                                  .value ||
-                                  null,
-                              )
-                            }
-                          >
-                            <option value="">
-                              Select
-                              lecturer…
-                            </option>
-
-                            {lecturers.map(
-                              (
-                                lecturer,
-                              ) => (
-                                <option
-                                  key={
-                                    lecturer.id
-                                  }
-                                  value={
-                                    lecturer.id
-                                  }
-                                >
-                                  {
-                                    lecturer.name
-                                  }
-                                </option>
-                              ),
-                            )}
-                          </select>
-                        </div>
-                      )}
-
-
-                      {originalModes.time ===
-                        "find" && (
-                        <>
-                          <div>
-                            <label>
-                              Day
-                            </label>
-
-                            <select
-                              value={
-                                diagDay ??
-                                ""
-                              }
-                              onChange={(
-                                e,
-                              ) =>
-                                onDiagDayChange(
-                                  e.target
-                                    .value ||
-                                    null,
-                                )
-                              }
-                            >
-                              <option value="">
-                                Select day…
-                              </option>
-
-                              {days.map(
-                                (
-                                  day,
-                                ) => (
-                                  <option
-                                    key={
-                                      day
-                                    }
-                                    value={
-                                      day
-                                    }
-                                  >
-                                    {
-                                      day
-                                    }
-                                  </option>
-                                ),
-                              )}
-                            </select>
-                          </div>
-
-
-                          <div>
-                            <label>
-                              Time
-                            </label>
-
-                            <select
-                              value={
-                                diagTime ??
-                                ""
-                              }
-                              onChange={(
-                                e,
-                              ) =>
-                                onDiagTimeChange(
-                                  e.target
-                                    .value ||
-                                    null,
-                                )
-                              }
-                            >
-                              <option value="">
-                                Select time…
-                              </option>
-
-                              {timeSlots.map(
-                                (
-                                  time,
-                                ) => (
-                                  <option
-                                    key={
-                                      time
-                                    }
-                                    value={
-                                      time
-                                    }
-                                  >
-                                    {
-                                      time
-                                    }
-                                  </option>
-                                ),
-                              )}
-                            </select>
-                          </div>
-                        </>
-                      )}
-
-
-                      {originalModes.room ===
-                        "find" && (
-                        <div>
-                          <label>
-                            Room
-                          </label>
-
-                          <select
-                            value={
-                              diagRoom ??
-                              ""
-                            }
-                            onChange={(
-                              e,
-                            ) =>
-                              onDiagRoomChange(
-                                e.target
-                                  .value ||
-                                  null,
-                              )
-                            }
-                          >
-                            <option value="">
-                              Select room…
-                            </option>
-
-                            {rooms.map(
-                              (room) => (
-                                <option
-                                  key={
-                                    room.id
-                                  }
-                                  value={
-                                    room.id
-                                  }
-                                >
-                                  {
-                                    room.name
-                                  }
-                                </option>
-                              ),
-                            )}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-
-
-                    {diagLoading && (
-                      <p className="diagnosis-status">
-                        Checking this
-                        combination…
-                      </p>
-                    )}
-
-
-                    {diagError && (
-                      <p className="diagnosis-error">
-                        {diagError}
-                      </p>
-                    )}
-
-
-                    {diagResult && (
-                      <div className="diagnostics-section diagnostics-section-spaced">
-                        <StakeholderViolationsPanel
-                          violations={
-                            diagResult.violations
-                          }
-                          proposedSlots={
-                            caseBProposedSlots
-                          }
-                          excludeSessionId={
-                            excludeSessionId
-                          }
-                          lecturers={
-                            lecturers
-                          }
-                          rooms={
-                            rooms
-                          }
-                          cohorts={
-                            cohorts
-                          }
-                          sessions={
-                            sessions
-                          }
-                          lecturerUnavailableSlotMap={
-                            lecturerUnavailableSlotMap
-                          }
-                          formatViolationNice={
-                            formatViolationNice
-                          }
-                          isRelaxableViolation={
-                            isRelaxableViolation
-                          }
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
+              {needsInteractiveDiagnosis && originalModes && (
+                <AnyRequestExplanation
+                  key={mixedRecoveryRequestKey}
+                  originalModes={originalModes}
+                  searchSpaceResults={searchSpaceResults}
+                  searchSpaceLoading={searchSpaceLoading}
+                  searchSpaceError={searchSpaceError}
+                  loadSearchSpaceDiagnosis={loadSearchSpaceDiagnosis}
+                  days={days}
+                  timeSlots={timeSlots}
+                  lecturers={lecturers}
+                  rooms={rooms}
+                  cohorts={cohorts}
+                  sessions={sessions}
+                  lecturerUnavailableSlotMap={lecturerUnavailableSlotMap}
+                  excludeSessionId={excludeSessionId}
+                  caseBProposedSlots={caseBProposedSlots}
+                  diagLecturer={diagLecturer}
+                  onDiagLecturerChange={onDiagLecturerChange}
+                  diagDay={diagDay}
+                  onDiagDayChange={onDiagDayChange}
+                  diagTime={diagTime}
+                  onDiagTimeChange={onDiagTimeChange}
+                  diagRoom={diagRoom}
+                  onDiagRoomChange={onDiagRoomChange}
+                  diagLoading={diagLoading}
+                  diagError={diagError}
+                  diagResult={diagResult}
+                  formatViolationNice={formatViolationNice}
+                  isRelaxableViolation={isRelaxableViolation}
+                  renderRoomSuitability={renderRoomSuitabilityForViolations}
+                  getRoomName={getRoomName}
+                  getLecturerName={getLecturerName}
+                />
+              )}
 
                 </div>
               )}
@@ -2917,6 +2886,7 @@ function getAdditionalChangeSessionLabel(
                                     padding: "12px",
                                     border: "1px solid #e5e7eb",
                                     borderRadius: "10px",
+                                    background: "#fff8d6",
                                   }}
                                 >
                                   <strong>Selected target placement</strong>
@@ -3035,22 +3005,6 @@ function getAdditionalChangeSessionLabel(
                           ))}
                         </div>}
                       </section>
-                    )}
-
-                  {perturbationAlternatives &&
-                    perturbationAlternatives.status !== "feasible" && (
-                      <div
-                        style={{
-                          marginTop: "18px",
-                          padding: "14px 16px",
-                          border: "1px solid #f0b8b8",
-                          borderRadius: "10px",
-                          background: "#fff7f7",
-                        }}
-                      >
-                        {perturbationAlternatives.reason ??
-                          "No perturbation-only rearrangement was found."}
-                      </div>
                     )}
 
                   {mixedRecoveryOpen && (

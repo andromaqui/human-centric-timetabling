@@ -762,6 +762,8 @@ async function chooseStoredSolution(candidate: StoredSolutionCandidate) {
         return `${getCohortName(v.cohort_id)} would exceed daily limit on ${formatDay(v.day)} (${v.total_hours}h > ${v.limit}h)`;
       case "lecturer_lunch_break":
         return `${getLecturerName(v.lecturer_id)} would have no lunch break on ${formatDay(v.day)}`;
+      case "cohort_overlap":
+        return `${getCohortName(v.cohort_id)} is already attending ${getSessionLabel(v.blocking_session_id)}`;
       default:
         return v.type;
     }
@@ -1821,9 +1823,12 @@ async function runRescheduleWithAdditionalChanges() {
 
     setPerturbationAlternatives(result);
 
-    if (result.status !== "feasible") {
+    // An infeasible perturbation-only search is an expected recovery result,
+    // not a failure of the main reschedule solver. Step4Solution uses the
+    // returned status to mark "Move other classes only" as unavailable.
+    if (result.status === "invalid") {
       setSolverError(
-        result.reason ?? "No perturbation recovery could be found.",
+        result.reason ?? "The perturbation recovery request was invalid.",
       );
     }
 

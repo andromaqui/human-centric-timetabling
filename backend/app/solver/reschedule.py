@@ -523,6 +523,35 @@ def add_lecturer_no_overlap_constraint(model, all_sessions, start_vars, lecturer
             model.AddBoolOr([same_lecturer.Not(), a_before_b, b_before_a])
 
 
+def add_cohort_no_overlap_constraint(model, all_sessions, start_vars):
+    """Prevent sessions sharing any cohort from overlapping in time."""
+    for i in range(len(all_sessions)):
+        for j in range(i + 1, len(all_sessions)):
+            a = all_sessions[i]
+            b = all_sessions[j]
+
+            a_cohort_ids = {cohort.id for cohort in a.cohorts}
+            b_cohort_ids = {cohort.id for cohort in b.cohorts}
+
+            if not a_cohort_ids.intersection(b_cohort_ids):
+                continue
+
+            a_duration = get_duration_slots(a)
+            b_duration = get_duration_slots(b)
+
+            a_before_b = model.NewBoolVar(f"a_before_b_cohort_{a.id}_{b.id}")
+            b_before_a = model.NewBoolVar(f"b_before_a_cohort_{a.id}_{b.id}")
+
+            model.Add(
+                start_vars[a.id] + a_duration <= start_vars[b.id]
+            ).OnlyEnforceIf(a_before_b)
+            model.Add(
+                start_vars[b.id] + b_duration <= start_vars[a.id]
+            ).OnlyEnforceIf(b_before_a)
+
+            model.AddBoolOr([a_before_b, b_before_a])
+
+
 def add_lecturer_unavailability_constraint(model, all_sessions, start_vars, lecturer_vars, lecturer_id_to_index, unavailability_rows):
     for row in unavailability_rows:
         if row.lecturer_id not in lecturer_id_to_index:
@@ -545,6 +574,117 @@ def add_lecturer_unavailability_constraint(model, all_sessions, start_vars, lect
 
             model.AddBoolOr([assigned.Not(), before, after])
 
+
+
+# ------------------------------------------------------------------
+# QUICK TESTING HELPERS: baseline-aware hard constraints for recovery
+# ------------------------------------------------------------------
+
+def _baseline_sessions_overlap(a, b):
+    a_start = datetime_to_slot(a.start)
+    b_start = datetime_to_slot(b.start)
+    return (
+        a_start < b_start + get_duration_slots(b)
+        and b_start < a_start + get_duration_slots(a)
+    )
+
+
+def add_baseline_aware_room_no_overlap_constraint(model, all_sessions, start_vars, room_vars):
+    """For recovery only: preserve an existing room clash, but forbid new ones."""
+    for i in range(len(all_sessions)):
+        for j in range(i + 1, len(all_sessions)):
+            a, b = all_sessions[i], all_sessions[j]
+
+            if a.room_id == b.room_id and _baseline_sessions_overlap(a, b):
+                continue
+
+            a_duration = get_duration_slots(a)
+            b_duration = get_duration_slots(b)
+            same_room = model.NewBoolVar(f"recovery_same_room_{a.id}_{b.id}")
+            a_before_b = model.NewBoolVar(f"recovery_a_before_b_room_{a.id}_{b.id}")
+            b_before_a = model.NewBoolVar(f"recovery_b_before_a_room_{a.id}_{b.id}")
+
+            model.Add(room_vars[a.id] == room_vars[b.id]).OnlyEnforceIf(same_room)
+            model.Add(room_vars[a.id] != room_vars[b.id]).OnlyEnforceIf(same_room.Not())
+            model.Add(start_vars[a.id] + a_duration <= start_vars[b.id]).OnlyEnforceIf(a_before_b)
+            model.Add(start_vars[b.id] + b_duration <= start_vars[a.id]).OnlyEnforceIf(b_before_a)
+            model.AddBoolOr([same_room.Not(), a_before_b, b_before_a])
+
+
+def add_baseline_aware_lecturer_no_overlap_constraint(model, all_sessions, start_vars, lecturer_vars):
+    """For recovery only: preserve an existing lecturer clash, but forbid new ones."""
+    for i in range(len(all_sessions)):
+        for j in range(i + 1, len(all_sessions)):
+            a, b = all_sessions[i], all_sessions[j]
+
+            if a.lecturer_id == b.lecturer_id and _baseline_sessions_overlap(a, b):
+                continue
+
+            a_duration = get_duration_slots(a)
+            b_duration = get_duration_slots(b)
+            same_lecturer = model.NewBoolVar(f"recovery_same_lecturer_{a.id}_{b.id}")
+            a_before_b = model.NewBoolVar(f"recovery_a_before_b_lecturer_{a.id}_{b.id}")
+            b_before_a = model.NewBoolVar(f"recovery_b_before_a_lecturer_{a.id}_{b.id}")
+
+            model.Add(lecturer_vars[a.id] == lecturer_vars[b.id]).OnlyEnforceIf(same_lecturer)
+            model.Add(lecturer_vars[a.id] != lecturer_vars[b.id]).OnlyEnforceIf(same_lecturer.Not())
+            model.Add(start_vars[a.id] + a_duration <= start_vars[b.id]).OnlyEnforceIf(a_before_b)
+            model.Add(start_vars[b.id] + b_duration <= start_vars[a.id]).OnlyEnforceIf(b_before_a)
+            model.AddBoolOr([same_lecturer.Not(), a_before_b, b_before_a])
+
+
+def add_baseline_aware_cohort_no_overlap_constraint(model, all_sessions, start_vars):
+    """For recovery only: preserve an existing cohort clash, but forbid new ones."""
+    for i in range(len(all_sessions)):
+        for j in range(i + 1, len(all_sessions)):
+            a, b = all_sessions[i], all_sessions[j]
+            a_cohorts = {c.id for c in a.cohorts}
+            b_cohorts = {c.id for c in b.cohorts}
+            if not a_cohorts.intersection(b_cohorts):
+                continue
+
+            if _baseline_sessions_overlap(a, b):
+                continue
+
+            a_duration = get_duration_slots(a)
+            b_duration = get_duration_slots(b)
+            a_before_b = model.NewBoolVar(f"recovery_a_before_b_cohort_{a.id}_{b.id}")
+            b_before_a = model.NewBoolVar(f"recovery_b_before_a_cohort_{a.id}_{b.id}")
+            model.Add(start_vars[a.id] + a_duration <= start_vars[b.id]).OnlyEnforceIf(a_before_b)
+            model.Add(start_vars[b.id] + b_duration <= start_vars[a.id]).OnlyEnforceIf(b_before_a)
+            model.AddBoolOr([a_before_b, b_before_a])
+
+
+def add_baseline_aware_lecturer_unavailability_constraint(
+    model, all_sessions, start_vars, lecturer_vars, lecturer_id_to_index, unavailability_rows
+):
+    """For recovery only: an exact pre-existing unavailability clash may remain."""
+    for row in unavailability_rows:
+        if row.lecturer_id not in lecturer_id_to_index:
+            continue
+        lecturer_index = lecturer_id_to_index[row.lecturer_id]
+        blocked_slot = day_time_to_slot(row.day, f"{row.hour:02d}:00")
+
+        for session in all_sessions:
+            duration = get_duration_slots(session)
+            original_start = datetime_to_slot(session.start)
+            original_end = original_start + duration
+            baseline_same_violation = (
+                session.lecturer_id == row.lecturer_id
+                and original_start < blocked_slot + 1
+                and blocked_slot < original_end
+            )
+            if baseline_same_violation:
+                continue
+
+            assigned = model.NewBoolVar(f"recovery_assigned_{session.id}_{row.lecturer_id}_{blocked_slot}")
+            before = model.NewBoolVar(f"recovery_before_unavailable_{session.id}_{row.lecturer_id}_{blocked_slot}")
+            after = model.NewBoolVar(f"recovery_after_unavailable_{session.id}_{row.lecturer_id}_{blocked_slot}")
+            model.Add(lecturer_vars[session.id] == lecturer_index).OnlyEnforceIf(assigned)
+            model.Add(lecturer_vars[session.id] != lecturer_index).OnlyEnforceIf(assigned.Not())
+            model.Add(start_vars[session.id] + duration <= blocked_slot).OnlyEnforceIf(before)
+            model.Add(start_vars[session.id] >= blocked_slot + 1).OnlyEnforceIf(after)
+            model.AddBoolOr([assigned.Not(), before, after])
 
 def add_class_capacity_constraint(model, all_sessions, room_vars, rooms, active_capacity_sessions):
     for session in all_sessions:
@@ -934,6 +1074,12 @@ def build_solver_model(
         all_sessions,
         start_vars,
         lecturer_vars,
+    )
+
+    add_cohort_no_overlap_constraint(
+        model,
+        all_sessions,
+        start_vars,
     )
 
     add_lecturer_unavailability_constraint(
@@ -1985,40 +2131,49 @@ def request_is_concrete(request):
     )
 
 
+def sessions_overlapping_from_sessions(
+    target_session,
+    proposed_start,
+    all_sessions,
+):
+    """Return other sessions overlapping the proposed placement.
+
+    This version accepts preloaded sessions so bulk ANY diagnosis does not
+    query the database once per candidate.
+    """
+    proposed_start_slot = datetime_to_slot(proposed_start)
+    proposed_duration = get_duration_slots(target_session)
+    proposed_end_slot = proposed_start_slot + proposed_duration
+
+    overlapping = []
+    for session in all_sessions:
+        if session.id == target_session.id:
+            continue
+
+        session_start_slot = datetime_to_slot(session.start)
+        session_duration = get_duration_slots(session)
+        session_end_slot = session_start_slot + session_duration
+
+        if (
+            proposed_start_slot < session_end_slot
+            and session_start_slot < proposed_end_slot
+        ):
+            overlapping.append(session)
+
+    return overlapping
+
+
 def sessions_overlapping(
     db,
     target_session,
     proposed_start,
 ):
-    """
-    Return every other session overlapping the proposed time.
-
-    Uses solver slots instead of Python datetime comparisons.
-    This avoids timezone-aware vs timezone-naive comparison issues
-    and mirrors the CP-SAT timetable representation.
-    """
-
-    proposed_start_slot = datetime_to_slot(proposed_start)
-    proposed_duration = get_duration_slots(target_session)
-    proposed_end_slot = proposed_start_slot + proposed_duration
-
-    other_sessions = [
-        session
-        for session in db.query(Session).all()
-        if session.id != target_session.id
-    ]
-
-    overlapping = []
-
-    for session in other_sessions:
-        session_start_slot = datetime_to_slot(session.start)
-        session_duration = get_duration_slots(session)
-        session_end_slot = session_start_slot + session_duration
-
-        if proposed_start_slot < session_end_slot and session_start_slot < proposed_end_slot:
-            overlapping.append(session)
-
-    return overlapping
+    """Backward-compatible wrapper for concrete diagnosis."""
+    return sessions_overlapping_from_sessions(
+        target_session,
+        proposed_start,
+        db.query(Session).all(),
+    )
 
 
 # ------------------------------------------------------------------
@@ -2054,6 +2209,27 @@ def check_room_overlap(
             violations.append({
                 "type": "room_overlap",
                 "room_id": proposed_room_id,
+                "blocking_session_id": session.id,
+            })
+
+    return violations
+
+
+def check_cohort_overlap(
+    target_session,
+    overlapping_sessions,
+):
+    violations = []
+    target_cohort_ids = {cohort.id for cohort in target_session.cohorts}
+
+    for session in overlapping_sessions:
+        session_cohort_ids = {cohort.id for cohort in session.cohorts}
+        shared_cohort_ids = target_cohort_ids.intersection(session_cohort_ids)
+
+        for cohort_id in shared_cohort_ids:
+            violations.append({
+                "type": "cohort_overlap",
+                "cohort_id": cohort_id,
                 "blocking_session_id": session.id,
             })
 
@@ -2489,61 +2665,17 @@ def check_lecturer_lunch_break(
 # ------------------------------------------------------------------
 
 
-def diagnose_specific_request(
+def build_diagnostic_context(
     db,
-    target_session,
-    proposed_start,
-    proposed_room_id,
-    proposed_lecturer_id,
     request: RescheduleRequestIn | None = None,
 ):
-    violations = []
+    """Load all data needed by diagnostics exactly once.
 
+    A single concrete /diagnose call can still use this context, while the
+    ANY search-space endpoint can reuse it for every candidate.
+    """
     all_sessions = db.query(Session).all()
-
-    overlapping_sessions = sessions_overlapping(
-        db,
-        target_session,
-        proposed_start,
-    )
-
-    # --------------------------------------------------------------
-    # Hard constraints
-    # --------------------------------------------------------------
-
-    violations.extend(
-        check_lecturer_overlap(
-            proposed_lecturer_id,
-            overlapping_sessions,
-        )
-    )
-
-    violations.extend(
-        check_room_overlap(
-            proposed_room_id,
-            overlapping_sessions,
-        )
-    )
-
-    unavailability_rows = (
-        get_all_lecturer_unavailability(db)
-    )
-
-    violations.extend(
-        check_lecturer_unavailability(
-            target_session,
-            proposed_start,
-            proposed_lecturer_id,
-            unavailability_rows,
-        )
-    )
-
-    # --------------------------------------------------------------
-    # Relaxable constraints
-    # --------------------------------------------------------------
-
     rooms = get_rooms(db)
-    rooms_by_id = {room.id: room for room in rooms}
 
     active_capacity_sessions = get_active_class_capacity_sessions(db)
     active_equipment_sessions = get_active_class_equipment_sessions(db)
@@ -2566,59 +2698,258 @@ def diagnose_specific_request(
         lecturer_lunch_constraints=lunch_constraints,
     )
 
-    violations.extend(
-        check_class_capacity(
-            target_session,
-            proposed_room_id,
-            rooms_by_id,
-            active_capacity_sessions,
-        )
+    return {
+        "all_sessions": all_sessions,
+        "rooms": rooms,
+        "rooms_by_id": {room.id: room for room in rooms},
+        "lecturers": get_lecturers(db),
+        "unavailability_rows": get_all_lecturer_unavailability(db),
+        "active_capacity_sessions": active_capacity_sessions,
+        "active_equipment_sessions": active_equipment_sessions,
+        "lecturer_constraints": lecturer_constraints,
+        "cohort_constraints": cohort_constraints,
+        "lunch_constraints": lunch_constraints,
+    }
+
+
+def diagnose_specific_request(
+    db,
+    target_session,
+    proposed_start,
+    proposed_room_id,
+    proposed_lecturer_id,
+    request: RescheduleRequestIn | None = None,
+    diagnostic_context: dict[str, Any] | None = None,
+):
+    """Diagnose one concrete placement.
+
+    diagnostic_context is optional for backward compatibility. Passing a
+    prebuilt context avoids repeated database queries during bulk diagnosis.
+    """
+    context = diagnostic_context or build_diagnostic_context(db, request)
+    violations = []
+
+    all_sessions = context["all_sessions"]
+    overlapping_sessions = sessions_overlapping_from_sessions(
+        target_session,
+        proposed_start,
+        all_sessions,
     )
 
-    violations.extend(
-        check_class_equipment(
-            target_session,
-            proposed_room_id,
-            rooms_by_id,
-            active_equipment_sessions,
-        )
-    )
+    violations.extend(check_lecturer_overlap(
+        proposed_lecturer_id, overlapping_sessions
+    ))
+    violations.extend(check_room_overlap(
+        proposed_room_id, overlapping_sessions
+    ))
+    violations.extend(check_cohort_overlap(
+        target_session, overlapping_sessions
+    ))
+    violations.extend(check_lecturer_unavailability(
+        target_session,
+        proposed_start,
+        proposed_lecturer_id,
+        context["unavailability_rows"],
+    ))
 
-    violations.extend(
-        check_lecturer_daily_hours(
-            target_session,
-            proposed_start,
-            proposed_lecturer_id,
-            all_sessions,
-            lecturer_constraints,
-        )
-    )
-
-    violations.extend(
-        check_cohort_daily_hours(
-            target_session,
-            proposed_start,
-            all_sessions,
-            cohort_constraints,
-        )
-    )
-
-    violations.extend(
-        check_lecturer_lunch_break(
-            target_session,
-            proposed_start,
-            proposed_lecturer_id,
-            all_sessions,
-            lunch_constraints,
-        )
-    )
+    violations.extend(check_class_capacity(
+        target_session,
+        proposed_room_id,
+        context["rooms_by_id"],
+        context["active_capacity_sessions"],
+    ))
+    violations.extend(check_class_equipment(
+        target_session,
+        proposed_room_id,
+        context["rooms_by_id"],
+        context["active_equipment_sessions"],
+    ))
+    violations.extend(check_lecturer_daily_hours(
+        target_session,
+        proposed_start,
+        proposed_lecturer_id,
+        all_sessions,
+        context["lecturer_constraints"],
+    ))
+    violations.extend(check_cohort_daily_hours(
+        target_session,
+        proposed_start,
+        all_sessions,
+        context["cohort_constraints"],
+    ))
+    violations.extend(check_lecturer_lunch_break(
+        target_session,
+        proposed_start,
+        proposed_lecturer_id,
+        all_sessions,
+        context["lunch_constraints"],
+    ))
 
     return {
         "violations": violations,
-        "overlapping_sessions": [
-            session.id
-            for session in overlapping_sessions
-        ],
+        "overlapping_sessions": [s.id for s in overlapping_sessions],
+    }
+
+
+def slot_to_datetime_for_session(target_session, slot: int):
+    """Convert a solver slot to a datetime in the target session's week."""
+    slot_info = slot_to_day_time(slot)
+    day_index = DAY_TO_INDEX[slot_info["day"]]
+
+    # Monday 00:00 of the week containing the target session. Keeping the
+    # original tzinfo makes this safe for aware as well as naive datetimes.
+    week_start = (
+        target_session.start
+        - timedelta(days=target_session.start.weekday())
+    ).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    hour, minute = map(int, slot_info["time"].split(":"))
+    return week_start + timedelta(
+        days=day_index,
+        hours=hour,
+        minutes=minute,
+    )
+
+
+def _candidate_values_for_search_space(request, target_session, context):
+    """Return the concrete values represented by KEEP/SPECIFIC/FIND."""
+    duration = get_duration_slots(target_session)
+
+    if request.time_mode == ChangeMode.FIND:
+        current_slot = datetime_to_slot(target_session.start)
+        start_slots = [
+            slot for slot in get_valid_start_slots(duration)
+            if slot != current_slot
+        ]
+    elif request.time_mode == ChangeMode.SPECIFIC:
+        parsed = parse_requested_start(request.requested_start)
+        start_slots = [datetime_to_slot(parsed)]
+    else:
+        start_slots = [datetime_to_slot(target_session.start)]
+
+    if request.room_mode == ChangeMode.FIND:
+        room_ids = [
+            room.id for room in context["rooms"]
+            if room.id != target_session.room_id
+        ]
+    elif request.room_mode == ChangeMode.SPECIFIC:
+        room_ids = [request.requested_room_id]
+    else:
+        room_ids = [target_session.room_id]
+
+    if request.lecturer_mode == ChangeMode.FIND:
+        lecturer_ids = [
+            lecturer.id for lecturer in context["lecturers"]
+            if lecturer.id != target_session.lecturer_id
+        ]
+    elif request.lecturer_mode == ChangeMode.SPECIFIC:
+        lecturer_ids = [request.requested_lecturer_id]
+    else:
+        lecturer_ids = [target_session.lecturer_id]
+
+    return start_slots, room_ids, lecturer_ids
+
+
+def diagnose_search_space(request: RescheduleRequestIn, db):
+    """Diagnose every concrete candidate represented by an ANY/FIND request.
+
+    The database is loaded once and all candidates are evaluated in-process.
+    This replaces N frontend HTTP calls with one backend request.
+    """
+    error = validate_request(request)
+    if error:
+        return {"status": "invalid", "reason": error}
+
+    if request_is_concrete(request):
+        return {
+            "status": "invalid",
+            "reason": "Search-space diagnosis requires at least one FIND dimension",
+        }
+
+    target_session, error = get_session(db, request.session_id)
+    if error:
+        return error
+
+    if request.room_mode == ChangeMode.KEEP and target_session.room_id is None:
+        return {
+            "status": "invalid",
+            "reason": "Session has no current room to keep",
+        }
+
+    error = validate_specific_values(db, request)
+    if error:
+        return {"status": "invalid", "reason": error}
+
+    context = build_diagnostic_context(db, request)
+    start_slots, room_ids, lecturer_ids = _candidate_values_for_search_space(
+        request, target_session, context
+    )
+
+    candidates = []
+    violation_candidate_counts = {}
+    total_violation_instances = 0
+    feasible_candidate_count = 0
+
+    for start_slot in start_slots:
+        proposed_start = slot_to_datetime_for_session(target_session, start_slot)
+        slot_info = slot_to_day_time(start_slot)
+
+        for room_id in room_ids:
+            for lecturer_id in lecturer_ids:
+                diagnostics = diagnose_specific_request(
+                    db,
+                    target_session,
+                    proposed_start,
+                    room_id,
+                    lecturer_id,
+                    request=request,
+                    diagnostic_context=context,
+                )
+                violations = diagnostics["violations"]
+
+                if not violations:
+                    feasible_candidate_count += 1
+
+                # Count a constraint type at most once per candidate, even if
+                # several blocking sessions create the same violation type.
+                candidate_types = {v["type"] for v in violations}
+                for violation_type in candidate_types:
+                    violation_candidate_counts[violation_type] = (
+                        violation_candidate_counts.get(violation_type, 0) + 1
+                    )
+
+                total_violation_instances += len(violations)
+                candidates.append({
+                    "start_slot": start_slot,
+                    "day": slot_info["day"],
+                    "time": slot_info["time"],
+                    "proposed_start": proposed_start.isoformat(),
+                    "room_id": room_id,
+                    "lecturer_id": lecturer_id,
+                    "violation_count": len(violations),
+                    "violations": violations,
+                    "overlapping_sessions": diagnostics["overlapping_sessions"],
+                })
+
+    summary = [
+        {
+            "type": violation_type,
+            "affected_candidates": count,
+        }
+        for violation_type, count in sorted(
+            violation_candidate_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+    ]
+
+    return {
+        "status": "diagnosed",
+        "candidate_count": len(candidates),
+        "feasible_candidate_count": feasible_candidate_count,
+        "infeasible_candidate_count": len(candidates) - feasible_candidate_count,
+        "total_violation_instances": total_violation_instances,
+        "summary": summary,
+        "candidates": candidates,
     }
 
 
@@ -2699,7 +3030,41 @@ def diagnose_working_day(db, day: str, working_sessions,):
                 })
 
     # --------------------------------------------------------------
-    # 3. Lecturer unavailability
+    # 3. Cohort overlap
+    # --------------------------------------------------------------
+
+    for i in range(len(day_sessions)):
+        for j in range(i + 1, len(day_sessions)):
+            a = day_sessions[i]
+            b = day_sessions[j]
+
+            a_start = datetime_to_slot(a.start)
+            a_end = a_start + get_duration_slots(a)
+
+            b_start = datetime_to_slot(b.start)
+            b_end = b_start + get_duration_slots(b)
+
+            overlaps = (
+                a_start < b_end
+                and b_start < a_end
+            )
+
+            if not overlaps:
+                continue
+
+            a_cohort_ids = {cohort.id for cohort in a.cohorts}
+            b_cohort_ids = {cohort.id for cohort in b.cohorts}
+            shared_cohort_ids = a_cohort_ids.intersection(b_cohort_ids)
+
+            for cohort_id in shared_cohort_ids:
+                violations.append({
+                    "type": "cohort_overlap",
+                    "cohort_id": cohort_id,
+                    "session_ids": [a.id, b.id],
+                })
+
+    # --------------------------------------------------------------
+    # 4. Lecturer unavailability
     # --------------------------------------------------------------
 
     unavailability_rows = get_all_lecturer_unavailability(db)
@@ -2790,7 +3155,7 @@ def diagnose_working_day(db, day: str, working_sessions,):
 
 
     # --------------------------------------------------------------
-    # 4. Lecturer daily hours
+    # 5. Lecturer daily hours
     # --------------------------------------------------------------
 
     lecturer_constraints = (
@@ -4558,21 +4923,27 @@ def build_min_perturbation_solver_model(
     # Always enforced.
     # ==============================================================
 
-    add_room_no_overlap_constraint(
+    add_baseline_aware_room_no_overlap_constraint(
         model,
         all_sessions,
         start_vars,
         room_vars,
     )
 
-    add_lecturer_no_overlap_constraint(
+    add_baseline_aware_lecturer_no_overlap_constraint(
         model,
         all_sessions,
         start_vars,
         lecturer_vars,
     )
 
-    add_lecturer_unavailability_constraint(
+    add_baseline_aware_cohort_no_overlap_constraint(
+        model,
+        all_sessions,
+        start_vars,
+    )
+
+    add_baseline_aware_lecturer_unavailability_constraint(
         model,
         all_sessions,
         start_vars,
@@ -5713,6 +6084,12 @@ def solve_reschedule_min_relaxation_any(
         all_sessions,
         start_vars,
         lecturer_vars,
+    )
+
+    add_cohort_no_overlap_constraint(
+        model,
+        all_sessions,
+        start_vars,
     )
 
     add_lecturer_unavailability_constraint(

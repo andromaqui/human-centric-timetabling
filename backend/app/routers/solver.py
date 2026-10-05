@@ -10,6 +10,7 @@ from app.solver.reschedule import (
     diagnose_specific_request,
     get_session,
     request_contains_find,
+    diagnose_search_space,
     solve_reschedule_min_relaxation_any,
 )
 from app.solver.perturbation_alternatives import (
@@ -154,6 +155,21 @@ def diagnose_reschedule(
         "status": "diagnosed",
         "diagnostics": diagnostics,
     }
+
+
+@router.post("/diagnose-search-space")
+def diagnose_reschedule_search_space(
+    request: RescheduleRequestIn,
+    db: Session = Depends(get_db),
+):
+    """
+    Diagnose the complete candidate search space for an ANY/FIND request.
+
+    The backend loads diagnostic data once and evaluates every candidate
+    in-process, so the frontend makes one HTTP request instead of one
+    /solver/diagnose request per candidate.
+    """
+    return diagnose_search_space(request, db)
 
 
 @router.post("/reschedule/min-perturbation")

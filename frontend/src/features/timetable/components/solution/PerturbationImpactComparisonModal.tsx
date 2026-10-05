@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { X } from "lucide-react";
 import type { PerturbationImpact } from "./PerturbationImpactModal";
 
@@ -142,6 +143,8 @@ export function PerturbationImpactComparisonModal({
   lecturers,
   onClose,
 }: Props) {
+  const [viewMode, setViewMode] = useState<"score" | "objective" | "stakeholder">("score");
+
   const getCohortName = (id: string) =>
     cohorts.find((item) => item.id === id)?.name ?? id;
 
@@ -308,6 +311,20 @@ export function PerturbationImpactComparisonModal({
     }, new Map<string, { key: string; name: string; rows: ComparisonRow[] }>()),
   ).map(([, group]) => group);
 
+  const objectiveRows = (Object.keys(objectiveMeta) as Array<keyof typeof objectiveMeta>)
+    .map((objectiveId) => ({
+      key: objectiveId,
+      objectiveId,
+      objectiveLabel: objectiveMeta[objectiveId].label,
+      unit: objectiveMeta[objectiveId].unit,
+      deltas: solutions.map((solution) =>
+        solution.impact ? solution.impact.objectives[objectiveId].delta : null,
+      ),
+    }))
+    .filter((row) =>
+      row.deltas.some((delta) => delta !== null && delta !== 0),
+    );
+
   const solutionCount = Math.max(solutions.length, 1);
 
   const gridTemplateColumns =
@@ -385,8 +402,11 @@ export function PerturbationImpactComparisonModal({
                 color: "#64748b",
               }}
             >
-              Compare how each rearrangement changes the impact on timetable
-              stakeholders.
+              {viewMode === "score"
+                ? "Compare the overall objective score for each rearrangement."
+                : viewMode === "objective"
+                  ? "Compare the overall objective changes for each rearrangement."
+                  : "Compare how each rearrangement changes the impact on timetable stakeholders."}
             </div>
           </div>
 
@@ -407,6 +427,66 @@ export function PerturbationImpactComparisonModal({
 
         <div
           style={{
+            padding: "12px 24px",
+            borderBottom: "1px solid #e2e8f0",
+            background: "#ffffff",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ fontSize: 12, color: "#64748b" }}>
+            Choose how the solution impacts are represented.
+          </div>
+
+          <div
+            role="group"
+            aria-label="Impact comparison view"
+            style={{
+              display: "inline-flex",
+              padding: 3,
+              border: "1px solid #cbd5e1",
+              borderRadius: 9,
+              background: "#f8fafc",
+            }}
+          >
+            {([
+              ["score", "Objective score"],
+              ["objective", "Objective view"],
+              ["stakeholder", "Stakeholder view"],
+            ] as const).map(([mode, label]) => {
+              const active = viewMode === mode;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setViewMode(mode)}
+                  aria-pressed={active}
+                  style={{
+                    border: 0,
+                    borderRadius: 7,
+                    padding: "8px 12px",
+                    background: active ? "#ffffff" : "transparent",
+                    color: active ? "#0f172a" : "#64748b",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    boxShadow: active
+                      ? "0 1px 3px rgba(15, 23, 42, 0.12)"
+                      : "none",
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div
+          style={{
             flex: 1,
             minHeight: 0,
             overflow: "auto",
@@ -414,7 +494,209 @@ export function PerturbationImpactComparisonModal({
             background: "#f8fafc",
           }}
         >
-          {stakeholderGroups.length === 0 ? (
+          {viewMode === "score" ? (
+            <div
+              style={{
+                minWidth: Math.max(760, 260 + solutions.length * 150),
+                border: "1px solid #dbe3ee",
+                borderRadius: 12,
+                overflow: "hidden",
+                background: "#ffffff",
+              }}
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns,
+                  background: "#f8fafc",
+                  borderBottom: "1px solid #dbe3ee",
+                }}
+              >
+                <div style={{ padding: "14px 16px", fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                  Overall score
+                </div>
+                {solutions.map((solution, index) => (
+                  <div
+                    key={`${solution.rank}-${index}`}
+                    style={{ padding: "14px 16px", borderLeft: "1px solid #e2e8f0", textAlign: "center" }}
+                  >
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a" }}>
+                      Solution {index + 1}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns, background: "#ffffff" }}>
+                <div
+                  style={{
+                    padding: "18px 16px",
+                    display: "flex",
+                    alignItems: "center",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: "#334155",
+                  }}
+                >
+                  Objective score
+                </div>
+                {solutions.map((solution, index) => (
+                  <div
+                    key={`score-${solution.rank}-${index}`}
+                    style={{
+                      padding: "16px 12px",
+                      borderLeft: "1px solid #eef2f7",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <div
+                      style={{
+                        minWidth: 90,
+                        padding: "9px 12px",
+                        borderRadius: 7,
+                        textAlign: "center",
+                        fontSize: 13,
+                        fontWeight: 800,
+                        color: "#0f172a",
+                        background: "#f8fafc",
+                        border: "1px solid #e2e8f0",
+                      }}
+                    >
+                      {solution.objective_score === null ? "—" : formatNumber(solution.objective_score)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : viewMode === "objective" ? (
+            objectiveRows.length === 0 ? (
+              <div
+                style={{
+                  padding: 24,
+                  border: "1px dashed #cbd5e1",
+                  borderRadius: 10,
+                  background: "#ffffff",
+                  color: "#64748b",
+                  fontSize: 13,
+                }}
+              >
+                No objective changes are available to compare.
+              </div>
+            ) : (
+              <div
+                style={{
+                  minWidth: Math.max(760, 260 + solutions.length * 150),
+                  border: "1px solid #dbe3ee",
+                  borderRadius: 12,
+                  overflow: "hidden",
+                  background: "#ffffff",
+                }}
+              >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns,
+                    background: "#f8fafc",
+                    borderBottom: "1px solid #dbe3ee",
+                    position: "sticky",
+                    top: 0,
+                    zIndex: 4,
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: "14px 16px",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: "#64748b",
+                    }}
+                  >
+                    Objective
+                  </div>
+
+                  {solutions.map((solution, index) => (
+                    <div
+                      key={`${solution.rank}-${index}`}
+                      style={{
+                        padding: "14px 16px",
+                        borderLeft: "1px solid #e2e8f0",
+                        textAlign: "center",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 800,
+                          color: "#0f172a",
+                        }}
+                      >
+                        Solution {index + 1}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {objectiveRows.map((row, rowIndex) => (
+                  <div
+                    key={row.key}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns,
+                      borderTop:
+                        rowIndex === 0 ? undefined : "1px solid #eef2f7",
+                      background: "#ffffff",
+                    }}
+                  >
+                    <div
+                      style={{
+                        padding: "14px 16px",
+                        display: "flex",
+                        alignItems: "center",
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: "#334155",
+                      }}
+                    >
+                      {row.objectiveLabel}
+                    </div>
+
+                    {row.deltas.map((delta, solutionIndex) => {
+                      const formatted = formatDelta(delta, row.unit);
+
+                      return (
+                        <div
+                          key={`${row.key}-${solutionIndex}`}
+                          style={{
+                            padding: "10px 12px",
+                            borderLeft: "1px solid #eef2f7",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <div
+                            style={{
+                              minWidth: 90,
+                              padding: "7px 10px",
+                              borderRadius: 7,
+                              textAlign: "center",
+                              fontSize: 12,
+                              fontWeight: 700,
+                              ...changeStyle(formatted.kind),
+                            }}
+                          >
+                            {formatted.text}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            )
+          ) : stakeholderGroups.length === 0 ? (
             <div
               style={{
                 padding: 24,
@@ -569,8 +851,9 @@ export function PerturbationImpactComparisonModal({
               color: "#64748b",
             }}
           >
-            ↓ indicates a reduction in the measured impact; ↑ indicates an
-            increase. Objectives with no change in any solution are omitted.
+            {viewMode === "score"
+              ? "The objective score provides a single overall value for each solution."
+              : "↓ indicates a reduction in the measured impact; ↑ indicates an increase. Objectives with no change in any solution are omitted."}
           </div>
         </div>
       </div>

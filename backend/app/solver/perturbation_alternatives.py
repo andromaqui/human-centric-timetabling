@@ -585,6 +585,16 @@ def find_perturbation_alternatives(
             proposed_impact,
         )
 
+        print(f"\n[IMPACT DEBUG solution {solution_index + 1}]")
+        print("BASELINE IMPACT:")
+        print(baseline_impact)
+
+        print("PROPOSED IMPACT:")
+        print(proposed_impact)
+
+        print("COMPARISON:")
+        print(solution["impact"])
+
         solutions.append(solution)
 
         # ---------------------------------------------------------

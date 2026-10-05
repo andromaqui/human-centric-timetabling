@@ -54,6 +54,11 @@ cohorts = [
     models.Cohort(id="cohort-r", name="Cohort R", program_id="cs"),
     # ANY/FIND smart-relaxation test cohort
     models.Cohort(id="cohort-any", name="ANY Recovery Cohort", program_id="cs"),
+    models.Cohort(id="cohort-any-extra", name="ANY Tuesday Lecturer Extra Cohort", program_id="cs"),
+    models.Cohort(id="cohort-room-xyz", name="Room XYZ Monday Cohort", program_id="cs"),
+    # Simple mixed-recovery study scenario
+    models.Cohort(id="cohort-mix", name="SE Year 3", program_id="se"),
+    models.Cohort(id="cohort-mix-other", name="SE Elective Group", program_id="se"),
 ]
 
 db.add_all(cohorts)
@@ -99,6 +104,9 @@ lecturers = [
     models.Lecturer(id="lecturer-28", name="Dr. Wednesday Anchor"),
     models.Lecturer(id="lecturer-29", name="Dr. Thursday Anchor"),
     models.Lecturer(id="lecturer-30", name="Dr. Friday Anchor"),
+    # Simple mixed-recovery study scenario
+    models.Lecturer(id="lecturer-31", name="Dr. Laura Bennett"),
+    models.Lecturer(id="lecturer-32", name="Dr. Mark Hughes"),
 ]
 
 db.add_all(lecturers)
@@ -493,6 +501,87 @@ for hour in TEACHING_HOURS:
     )
 
 
+# -------------------------------------------------
+# ANY/FIND objective-impact test availability
+#
+# lecturer-26 (Monday target lecturer): unavailable Thursday + Friday.
+# lecturer-27 (Tuesday anchor lecturer): unavailable Thursday + Friday; Monday is available.
+# lecturer-28 (Wednesday anchor lecturer): unavailable Thursday + Friday,
+# and additionally Wednesday 11:00-13:00. Monday is available.
+# -------------------------------------------------
+for lecturer_id in ["lecturer-26", "lecturer-27"]:
+    for day in ["thu", "fri"]:
+        for hour in TEACHING_HOURS:
+            unavailability.append(
+                models.LecturerUnavailability(
+                    lecturer_id=lecturer_id,
+                    day=day,
+                    hour=hour,
+                )
+            )
+
+for day in ["mon", "thu", "fri"]:
+    for hour in TEACHING_HOURS:
+        unavailability.append(
+            models.LecturerUnavailability(
+                lecturer_id="lecturer-28",
+                day=day,
+                hour=hour,
+            )
+        )
+
+for hour in [11, 12]:
+    unavailability.append(
+        models.LecturerUnavailability(
+            lecturer_id="lecturer-28",
+            day="wed",
+            hour=hour,
+        )
+    )
+
+
+
+# -------------------------------------------------
+# SIMPLE MIXED-RECOVERY STUDY SCENARIO
+#
+# Requested move: session-48 (Laura + SE Year 3)
+# Thu 14:00-16:00 -> Tue 14:00-16:00.
+#
+# Tuesday already contains:
+#   - Laura teaching SE Elective Group, 09:00-13:00
+#   - SE Year 3 taught by Mark Hughes, 09:00-13:00
+#
+# The request therefore creates exactly two relaxable daily-hours violations.
+# Laura's anchor can move to Wed 09:00-13:00; the cohort anchor can move
+# to Thu 09:00-13:00. This gives the intended landscape:
+#   0P + 2R, 1P + 1R, or 2P + 0R.
+# -------------------------------------------------
+MIXED_STUDY_FREE_SLOTS = {
+    "lecturer-31": {
+        ("tue", 9), ("tue", 10), ("tue", 11), ("tue", 12),
+        ("tue", 14), ("tue", 15),
+        ("wed", 9), ("wed", 10), ("wed", 11), ("wed", 12),
+        ("thu", 14), ("thu", 15),
+    },
+    "lecturer-32": {
+        ("tue", 9), ("tue", 10), ("tue", 11), ("tue", 12),
+        ("thu", 9), ("thu", 10), ("thu", 11), ("thu", 12),
+    },
+}
+
+for lecturer_id, free_slots in MIXED_STUDY_FREE_SLOTS.items():
+    for day in TEACHING_DAYS:
+        for hour in TEACHING_HOURS:
+            if (day, hour) in free_slots:
+                continue
+            unavailability.append(
+                models.LecturerUnavailability(
+                    lecturer_id=lecturer_id,
+                    day=day,
+                    hour=hour,
+                )
+            )
+
 db.add_all(unavailability)
 
 # endregion
@@ -574,6 +663,11 @@ rooms = [
     models.Room(id="room-study-z4", name="Study Room Z4", capacity=40, equipment="Projector"),
     models.Room(id="room-study-r", name="Study Room R1", capacity=40, equipment="Projector"),
     models.Room(id="room-study-any", name="Study Room ANY", capacity=40, equipment="Projector"),
+    models.Room(id="room-xyz", name="Room XYZ", capacity=40, equipment="Projector"),
+    # Simple mixed-recovery study scenario
+    models.Room(id="room-mix-target", name="Study Room M1", capacity=40, equipment="Projector"),
+    models.Room(id="room-mix-laura", name="Study Room M2", capacity=40, equipment="Projector"),
+    models.Room(id="room-mix-cohort", name="Study Room M3", capacity=40, equipment="Projector"),
 ]
 
 db.add_all(rooms)
@@ -744,6 +838,13 @@ models.Module(
     models.Module(id="module-41", code="CSANYW", title="ANY Wednesday Anchor", required_capacity=40, required_equipment="Projector"),
     models.Module(id="module-42", code="CSANYH", title="ANY Thursday Anchor", required_capacity=40, required_equipment="Projector"),
     models.Module(id="module-43", code="CSANYF", title="ANY Friday Anchor", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-44", code="CSANYM", title="ANY Tuesday Lecturer Monday Class", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-45", code="XYZ1", title="Room XYZ Monday Class 1", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-46", code="XYZ2", title="Room XYZ Monday Class 2", required_capacity=40, required_equipment="Projector"),
+    # Simple mixed-recovery study scenario
+    models.Module(id="module-47", code="SEMIX", title="Software Engineering Practice", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-48", code="SELA", title="Applied Software Design", required_capacity=40, required_equipment="Projector"),
+    models.Module(id="module-49", code="SECO", title="Software Project Management", required_capacity=40, required_equipment="Projector"),
 ]
 
 db.add_all(modules)
@@ -804,6 +905,16 @@ constraints = [
         ),
         stakeholder="Lecturer",
         type="relaxable",
+    ),
+    models.Constraint(
+        id="cohort-one-class-at-time",
+        name="Cohort cannot attend more than 1 class at a time",
+        description=(
+            "A cohort can never be scheduled to attend two "
+            "sessions that overlap in time."
+        ),
+        stakeholder="Cohort",
+        type="unrelaxable",
     ),
     models.Constraint(
         id="cohort-max-teaching-hours-per-day",
@@ -1294,13 +1405,13 @@ sessions_data = [
 },
 
 # ============================================================
-# ANY/FIND SMART RELAXATION SCENARIO
+# ANY/FIND OBJECTIVE-IMPACT SCENARIO
 #
 # session-42 is the 3h target, currently Monday 09:00-12:00.
-# Its lecturer has no other Monday availability, but is free Tue-Fri.
-# Cohort ANY already has 2h on every Tue-Fri.
-# With a 4h cohort daily limit, moving the 3h target to any Tue-Fri
-# creates 5h and therefore requires exactly one cohort-hours relaxation.
+# Cohort ANY has only two anchor classes: Tuesday and Wednesday.
+# Thursday and Friday anchor classes have been removed.
+# The Tuesday and Wednesday anchors use different rooms.
+# Availability is deliberately restricted above to shape FIND/ANY recoveries.
 # ============================================================
 {
     "id": "session-42", "module_id": "module-39", "lecturer_id": "lecturer-26",
@@ -1310,27 +1421,71 @@ sessions_data = [
 },
 {
     "id": "session-43", "module_id": "module-40", "lecturer_id": "lecturer-27",
-    "room_id": "room-study-any", "type": "lecture",
+    "room_id": "room-xyz", "type": "lecture",
     "start": "2026-09-22T09:00:00", "end": "2026-09-22T11:00:00",
     "program_ids": ["cs"], "cohort_ids": ["cohort-any"],
 },
 {
     "id": "session-44", "module_id": "module-41", "lecturer_id": "lecturer-28",
-    "room_id": "room-study-any", "type": "lecture",
+    "room_id": "room-study-z1", "type": "lecture",
     "start": "2026-09-23T09:00:00", "end": "2026-09-23T11:00:00",
     "program_ids": ["cs"], "cohort_ids": ["cohort-any"],
 },
 {
-    "id": "session-45", "module_id": "module-42", "lecturer_id": "lecturer-29",
-    "room_id": "room-study-any", "type": "lecture",
-    "start": "2026-09-24T09:00:00", "end": "2026-09-24T11:00:00",
-    "program_ids": ["cs"], "cohort_ids": ["cohort-any"],
+    "id": "session-45", "module_id": "module-44", "lecturer_id": "lecturer-27",
+    "room_id": "room-study-z2", "type": "lecture",
+    "start": "2026-09-21T11:00:00", "end": "2026-09-21T13:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-any-extra"],
 },
 {
-    "id": "session-46", "module_id": "module-43", "lecturer_id": "lecturer-30",
-    "room_id": "room-study-any", "type": "lecture",
-    "start": "2026-09-25T09:00:00", "end": "2026-09-25T11:00:00",
-    "program_ids": ["cs"], "cohort_ids": ["cohort-any"],
+    "id": "session-46", "module_id": "module-45", "lecturer_id": "lecturer-29",
+    "room_id": "room-xyz", "type": "lecture",
+    "start": "2026-09-21T09:00:00", "end": "2026-09-21T11:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-room-xyz"],
+},
+{
+    "id": "session-47", "module_id": "module-46", "lecturer_id": "lecturer-30",
+    "room_id": "room-xyz", "type": "lecture",
+    "start": "2026-09-21T11:00:00", "end": "2026-09-21T14:00:00",
+    "program_ids": ["cs"], "cohort_ids": ["cohort-room-xyz"],
+},
+
+
+# ============================================================
+# SIMPLE MIXED-RECOVERY STUDY SCENARIO — 2R vs 1P+1R vs 2P
+#
+# Experimental request:
+#   Move session-48 (Laura Bennett + SE Year 3)
+#   from Thursday 14:00-16:00 to Tuesday 14:00-16:00,
+#   keeping Study Room M1 and Dr. Laura Bennett.
+#
+# Before request on Tuesday:
+#   Laura teaches session-49 for 4h (SE Elective Group).
+#   SE Year 3 attends session-50 for 4h (Mark Hughes).
+#
+# Requested target makes BOTH Laura and SE Year 3 reach 6h Tuesday.
+# Intended recovery landscape:
+#   0P + 2R : relax both daily-hours constraints.
+#   1P + 1R : move either session-49 or session-50, relax the other constraint.
+#   2P + 0R : move both anchor sessions, preserving both constraints.
+# ============================================================
+{
+    "id": "session-48", "module_id": "module-47", "lecturer_id": "lecturer-31",
+    "room_id": "room-mix-target", "type": "lecture",
+    "start": "2026-09-24T14:00:00", "end": "2026-09-24T16:00:00",
+    "program_ids": ["se"], "cohort_ids": ["cohort-mix"],
+},
+{
+    "id": "session-49", "module_id": "module-48", "lecturer_id": "lecturer-31",
+    "room_id": "room-mix-laura", "type": "lecture",
+    "start": "2026-09-22T09:00:00", "end": "2026-09-22T13:00:00",
+    "program_ids": ["se"], "cohort_ids": ["cohort-mix-other"],
+},
+{
+    "id": "session-50", "module_id": "module-49", "lecturer_id": "lecturer-32",
+    "room_id": "room-mix-cohort", "type": "lecture",
+    "start": "2026-09-22T09:00:00", "end": "2026-09-22T13:00:00",
+    "program_ids": ["se"], "cohort_ids": ["cohort-mix"],
 },
 
 ]

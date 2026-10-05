@@ -81,20 +81,6 @@ export function RequestedChangeSummary({
             <strong>{requestedRoom}</strong>
           </div>
         </div>
-
-        <div className="requested-change-summary-row">
-          <span className="requested-change-summary-label">
-            Lecturer
-          </span>
-
-          <div className="requested-change-summary-values">
-            <span>{originalLecturer}</span>
-            <span className="requested-change-summary-arrow">
-              →
-            </span>
-            <strong>{requestedLecturer}</strong>
-          </div>
-        </div>
       </div>
 
       <div className="requested-change-summary-scope">

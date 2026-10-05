@@ -1,13 +1,11 @@
 .room-suitability {
-  width: 320px;
-
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
   background: #ffffff;
-  border: 1px solid #dfe5f2;
-  border-radius: 14px;
-
+  border: 1px solid #dbe3f0;
+  border-radius: 12px;
   overflow: hidden;
-
-  color: #1e2340;
 }
 
 .room-suitability-header {
@@ -15,170 +13,254 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+
+  padding: 16px 20px;
+  border-bottom: 1px solid #e8edf5;
+}
+
+.room-suitability-header strong {
+  font-size: 16px;
+  color: #1e1b4b;
 }
 
 .room-suitability-link {
   border: 0;
-  padding: 0;
   background: transparent;
-  color: #3f4b99;
+  padding: 0;
+  color: #3949ab;
   font: inherit;
-  font-size: 12px;
   font-weight: 700;
   cursor: pointer;
-  white-space: nowrap;
 }
 
-.room-suitability-link:hover {
-  text-decoration: underline;
-}
-
-.room-suitability-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-
-  padding: 14px 16px;
-
-  border-bottom: 1px solid #edf0f6;
-
-  font-size: 14px;
-}
-
-.room-suitability-header strong {
-  font-weight: 700;
+/*
+ * Capacity and equipment now sit side-by-side
+ * and consume the same horizontal area that the
+ * timetable visual would otherwise occupy.
+ */
+.room-suitability-body {
+  display: grid;
+  grid-template-columns:
+    minmax(320px, 0.8fr)
+    minmax(420px, 1.2fr);
 }
 
 .room-suitability-section {
-  padding: 16px;
+  min-width: 0;
+  padding: 24px 28px;
 }
 
 .room-suitability-section + .room-suitability-section {
-  border-top: 1px solid #edf0f6;
+  border-left: 1px solid #e8edf5;
 }
 
 .room-suitability-label {
   display: block;
+  margin-bottom: 18px;
 
-  margin-bottom: 12px;
-
-  font-size: 11px;
-  font-weight: 700;
-
-  color: #6b7290;
-
+  color: #687391;
+  font-size: 13px;
+  font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 
-/* Capacity */
+/* -------------------------
+   CAPACITY
+   ------------------------- */
 
-.room-suitability-capacity {
+.room-suitability-capacity-summary {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-
-  margin-bottom: 12px;
+  margin-bottom: 20px;
 }
 
-.room-suitability-capacity > div {
+.room-suitability-capacity-summary > div {
   display: flex;
   flex-direction: column;
   gap: 4px;
 
-  padding: 10px 12px;
-
+  padding: 14px 16px;
   background: #f7f8fc;
   border: 1px solid #edf0f6;
-  border-radius: 9px;
+  border-radius: 10px;
 }
 
-.room-suitability-capacity span {
-  font-size: 11px;
-  color: #7a819c;
+.room-suitability-capacity-summary span {
+  color: #7a849f;
+  font-size: 13px;
 }
 
-.room-suitability-capacity strong {
-  font-size: 14px;
-  font-weight: 700;
+.room-suitability-capacity-summary strong {
+  color: #171b3a;
+  font-size: 18px;
+}
 
-  color: #1e2340;
+.room-suitability-capacity-visual {
+  margin-bottom: 18px;
+}
+
+.room-suitability-capacity-dots {
+  display: grid;
+  grid-template-columns: repeat(20, minmax(6px, 1fr));
+  gap: 5px;
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.room-suitability-capacity-dot {
+  width: 100%;
+  aspect-ratio: 1;
+  max-width: 16px;
+  border-radius: 50%;
+  justify-self: center;
+}
+
+/* Portion of room capacity required by this class */
+.room-suitability-capacity-dot.is-required {
+  background: #4655a5;
+}
+
+/* Capacity still available */
+.room-suitability-capacity-dot.is-free {
+  background: #e3e6ee;
+}
+
+/* Class exceeds the room's capacity */
+.room-suitability-capacity-dot.is-over-capacity {
+  background: #dc5b50;
+}
+
+.room-suitability-capacity-caption {
+  color: #707991;
+  font-size: 13px;
+}
+
+.room-suitability-capacity-caption strong {
+  color: #252b49;
 }
 
 
-/* Result message */
+/* -------------------------
+   RESULT
+   ------------------------- */
 
 .room-suitability-result {
-  padding: 9px 11px;
-
-  border-radius: 8px;
-
-  font-size: 12px;
-  font-weight: 600;
+  padding: 11px 14px;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .room-suitability-result.is-ok {
-  background: #eef8f1;
-  color: #39724b;
+  background: #edf8f1;
+  color: #36794c;
 }
 
 .room-suitability-result.is-conflict {
   background: #fff0ee;
-  color: #a7463d;
+  color: #b5483e;
 }
 
 
-/* Equipment */
+/* -------------------------
+   EQUIPMENT
+   ------------------------- */
 
 .room-suitability-equipment {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns:
+    repeat(2, minmax(200px, 1fr));
+  column-gap: 28px;
 }
 
 .room-suitability-equipment-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 20px;
 
-  gap: 16px;
+  min-height: 44px;
+  border-bottom: 1px solid #e8edf5;
 
-  padding: 10px 0;
-
-  border-bottom: 1px solid #edf0f6;
-
-  font-size: 12px;
-}
-
-.room-suitability-equipment-row:first-child {
-  padding-top: 0;
-}
-
-.room-suitability-equipment-row:last-child {
-  border-bottom: none;
-}
-
-.room-suitability-equipment-row > span:first-child {
+  color: #202542;
+  font-size: 14px;
   font-weight: 600;
 }
 
 .room-suitability-equipment-status {
-  white-space: nowrap;
-
-  font-size: 11px;
-  font-weight: 600;
+  flex-shrink: 0;
+  font-weight: 700;
 }
 
 .room-suitability-equipment-status.is-ok {
-  color: #39724b;
+  color: #36794c;
 }
 
 .room-suitability-equipment-status.is-missing {
-  color: #a7463d;
+  color: #bd493e;
 }
 
-.room-suitability-equipment
-  + .room-suitability-result {
-  margin-top: 10px;
+
+/* -------------------------
+   RESPONSIVE
+   ------------------------- */
+
+@media (max-width: 900px) {
+  .room-suitability-body {
+    grid-template-columns: 1fr;
+  }
+
+  .room-suitability-section + .room-suitability-section {
+    border-left: 0;
+    border-top: 1px solid #e8edf5;
+  }
+
+  .room-suitability-equipment {
+    grid-template-columns: 1fr;
+  }
+}
+
+.room-suitability-body--single {
+  grid-template-columns: 1fr;
+}
+
+.room-suitability-body--single
+  .room-suitability-section {
+  border-left: 0;
+}
+
+.room-suitability-secondary-check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  padding: 14px 28px;
+
+  border-top: 1px solid #e8edf5;
+  background: #f8fafc;
+
+  color: #707991;
+  font-size: 14px;
+}
+
+.room-suitability-secondary-check .is-ok {
+  color: #36794c;
+  font-weight: 700;
+}
+
+@media (max-width: 600px) {
+  .room-suitability-section {
+    padding: 20px;
+  }
+
+  .room-suitability-capacity-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .room-suitability-capacity-dots {
+    gap: 3px;
+  }
 }

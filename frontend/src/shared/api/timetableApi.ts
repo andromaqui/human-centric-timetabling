@@ -89,3 +89,12 @@ export async function applyTempTimetable(moves: unknown[]) {
 export async function resetTempTimetable() {
   return api.delete("/sessions/temp/");
 }
+
+export type StudySeed =
+  | "main"
+  | "explanations"
+  | "any-explanations";;
+
+export async function loadStudySeed(seed: StudySeed) {
+  return api.post("/study/load-seed", { seed });
+}

@@ -5,6 +5,7 @@ from .database import engine
 from .routers import (constraints, modules, relaxations, sessions,
                       lecturers, cohorts, constraint_instances, rooms, programs,
                       historical_impacts,
+study,
                       solver, candidate_solutions)
 
 app = FastAPI(title="Timetable API")
@@ -34,6 +35,7 @@ app.include_router(programs.router)
 app.include_router(solver.router)
 app.include_router(candidate_solutions.router)
 app.include_router(historical_impacts.router)
+app.include_router(study.router)
 
 @app.get("/health")
 def health():
